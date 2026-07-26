@@ -5,6 +5,12 @@
 本目录是独立 Git 仓库，预定远程为私有 `Voghost/JLShellLinkPlugin`。提交不得与
 父级聚合目录、JLShell、JLShellWebsite 或 JLShellLink 混合。
 
+## 分支流程
+
+- 日常开发和功能分支以 `develop` 为基线，提交先进入 `develop`。
+- `main` 只接收 GitHub 上的 `develop -> main` Pull Request，不得直接推送开发提交。
+- 发布标签只从 `main` 创建。
+
 - 使用 Java 21 和 Maven 3.9+。
 - Program 与 Session 插件必须保持独立 ServiceLoader 入口和独立 fat JAR。
 - `com.jlshell:plugin-api`、JavaFX 和宿主日志依赖必须为 provided/排除项。
@@ -17,4 +23,3 @@
 ```bash
 mvn verify -Djlshell.plugin-api.version=0.1.0.RELEASE
 ```
-
