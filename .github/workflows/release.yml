@@ -1,0 +1,39 @@
+name: Plugin Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+      - name: Test and package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mvn -B -ntp verify
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp link-program-plugin/target/*-fat.jar dist/jlshell-link-program-plugin.jar
+          cp link-session-plugin/target/*-fat.jar dist/jlshell-link-session-plugin.jar
+          sha256sum dist/*.jar > dist/SHA256SUMS
+      - name: Create private GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "JLShell Link Program and Session plugins."
+

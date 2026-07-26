@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+      - name: Test and package plugins
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mvn -B -ntp verify
+      - name: Verify host API is excluded from fat JARs
+        shell: bash
+        run: |
+          for jar_file in link-program-plugin/target/*-fat.jar link-session-plugin/target/*-fat.jar; do
+            if jar tf "$jar_file" | grep -q '^com/jlshell/plugin/api/'; then
+              echo "Host Plugin API leaked into $jar_file" >&2
+              exit 1
+            fi
+          done
+
