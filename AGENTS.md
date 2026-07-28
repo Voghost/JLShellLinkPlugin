@@ -15,7 +15,12 @@
 - Program 与 Session 插件必须保持独立 ServiceLoader 入口和独立 fat JAR。
 - `com.jlshell:plugin-api`、JavaFX 和宿主日志依赖必须为 provided/排除项。
 - 稳定公共能力为 `link.runtime.status`；破坏性变更需要新增能力名或版本。
-- 阶段 0 不下载/执行 Rust 二进制，不写订阅逻辑，不安装 Agent。
+- Program 插件独占 Connector 进程生命周期；Session 插件只能通过全局 capability
+  请求开关隧道，不得各自维护 Connector 进程。
+- Agent 部署必须先验证本地发布物摘要，上传到随机临时文件、验证远端摘要后再替换；
+  不得把票据、账号令牌或 SSH 凭据写入普通 PluginStorage 或日志。
+- 自动下载、发布签名验证、账号取票和 Agent 服务启动尚未完成；实现前必须保持
+  当前“用户显式配置发布目录并确认部署”的边界。
 - 不提交 GitHub Token、PAT、账号信息、机器码或 SSH 凭据。
 
 验证命令：
