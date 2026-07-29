@@ -34,7 +34,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private ConnectorProcessManager connectorManager;
     private LinkAccountClient accountClient;
     private final List<Registration> registrations = new ArrayList<>();
-    private final Map<String, String> sessionProjects = new ConcurrentHashMap<>();
+    private final Map<String, LinkBindingStore.SessionReference> sessionReferences = new ConcurrentHashMap<>();
+    private LinkBindingStore bindingStore;
 
     @Override
     public String id() {
@@ -71,6 +72,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         this.context = context;
         connectorManager = new ConnectorProcessManager(ConnectorConfiguration.load(context.storage()));
         accountClient = new LinkAccountClient(context.storage(), context.secureStorage(), connectorManager);
+        bindingStore = new LinkBindingStore(context.storage());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
                 .requiresSession(false)
@@ -123,23 +125,31 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AUTHORITY_CAPABILITY)
                 .description("Download the public Link ticket Authority keyring.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.authority()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.BINDING_GET_CAPABILITY)
+                .description("Return the Agent binding for the current saved connection.")
+                .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
+                        bindingStore.get(sessionReference(
+                                requiredString(args.getAsJsonObject(), "sessionId"))))).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.BINDING_SAVE_CAPABILITY)
+                .description("Bind the current saved connection to an Agent and exact target.")
+                .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
+                        saveBinding(args.getAsJsonObject()))).build());
         if (context.projectIntegration().available()) {
             registrations.add(context.projectIntegration().register(new LinkProjectContribution(context.storage())));
         }
         if (context.hostEvents().available()) {
             registrations.add(context.hostEvents().subscribe(SessionOpenedEvent.class, event -> {
-                if (event.projectId() == null) {
-                    sessionProjects.remove(event.sessionId());
-                } else {
-                    sessionProjects.put(event.sessionId(), event.projectId());
-                }
+                sessionReferences.put(event.sessionId(),
+                        new LinkBindingStore.SessionReference(event.projectId(), event.connectionId()));
             }));
             registrations.add(context.hostEvents().subscribe(ProjectDeletedEvent.class, event -> {
                 PluginStorage storage = context.storage();
                 if (storage != null) {
                     storage.remove(LinkProjectContribution.projectKey(event.projectId()));
                 }
-                sessionProjects.entrySet().removeIf(entry -> event.projectId().equals(entry.getValue()));
+                bindingStore.removeProject(event.projectId());
+                sessionReferences.entrySet().removeIf(entry ->
+                        event.projectId().equals(entry.getValue().projectId()));
             }));
         }
         context.info("JLShell Link program plugin activated");
@@ -158,7 +168,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             }
         }
         registrations.clear();
-        sessionProjects.clear();
+        sessionReferences.clear();
         for (String capability : List.of(
                 LinkPluginContract.RUNTIME_STATUS_CAPABILITY,
                 LinkPluginContract.TUNNEL_OPEN_CAPABILITY,
@@ -175,11 +185,14 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.TICKET_ISSUE_CAPABILITY,
                 LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
                 LinkPluginContract.AGENT_REGISTER_CAPABILITY,
-                LinkPluginContract.AUTHORITY_CAPABILITY)) {
+                LinkPluginContract.AUTHORITY_CAPABILITY,
+                LinkPluginContract.BINDING_GET_CAPABILITY,
+                LinkPluginContract.BINDING_SAVE_CAPABILITY)) {
             context.capabilityRegistry().unregister(capability);
         }
         accountClient.close();
         accountClient = null;
+        bindingStore = null;
         connectorManager.close();
         connectorManager = null;
         context.info("JLShell Link program plugin deactivated");
@@ -238,7 +251,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
 
     private JsonObject projectAgentIntent(String sessionId) {
         JsonObject result = new JsonObject();
-        String projectId = sessionProjects.get(sessionId);
+        String projectId = sessionReference(sessionId).projectId();
         boolean requested = false;
         if (projectId != null && context.storage() != null) {
             requested = Boolean.parseBoolean(context.storage().get(
@@ -251,6 +264,24 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             result.addProperty("projectId", projectId);
         }
         return result;
+    }
+
+    private JsonObject saveBinding(JsonObject args) {
+        LinkBindingStore.SessionReference session = sessionReference(requiredString(args, "sessionId"));
+        int port;
+        try {
+            port = args.get("targetPort").getAsInt();
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("targetPort is required", error);
+        }
+        if (port < 1 || port > 65535) throw new IllegalArgumentException("targetPort is invalid");
+        return bindingStore.save(session, requiredString(args, "agentId"),
+                requiredString(args, "targetIp"), port);
+    }
+
+    private LinkBindingStore.SessionReference sessionReference(String sessionId) {
+        return sessionReferences.getOrDefault(sessionId,
+                new LinkBindingStore.SessionReference(null, null));
     }
 
     private CompletableFuture<com.google.gson.JsonElement> agentInstallSpec(com.google.gson.JsonElement args) {

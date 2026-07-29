@@ -149,20 +149,28 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
             deploy.setDisable(true);
             result.setText("正在检测远端平台、校验本地发布物并上传…");
             new AgentDeploymentService(ssh, context.capabilityBus()).deployAndRegister(ssh.displayName())
-                    .whenComplete((deployed, error) ->
-                    Platform.runLater(() -> {
-                        deploy.setDisable(false);
+                    .whenComplete((deployed, error) -> {
                         if (error != null) {
+                            Platform.runLater(() -> {
+                                deploy.setDisable(false);
                             result.setText("部署失败：" + rootMessage(error));
                             context.showNotification("JLShell Link Agent 部署失败", NotificationLevel.ERROR);
-                        } else {
+                            });
+                            return;
+                        }
+                        saveBinding(context.capabilityBus(), sessionId(context), deployed)
+                                .whenComplete((binding, bindingError) -> Platform.runLater(() -> {
+                            deploy.setDisable(false);
                             result.setText("部署并注册完成\n平台：" + deployed.platform() + "/" + deployed.architecture()
                                     + "\n路径：" + deployed.remotePath() + "\nAgent PeerId："
                                     + deployed.agentPeerId() + "\n授权目标：" + deployed.targetIp() + ":"
-                                    + deployed.targetPort());
+                                    + deployed.targetPort()
+                                    + "\n服务管理器：" + deployed.serviceManager()
+                                    + (bindingError == null ? "\n已绑定当前连接。"
+                                    : "\n连接绑定未保存：" + rootMessage(bindingError)));
                             context.showNotification("JLShell Link Agent 已部署并启动", NotificationLevel.INFO);
-                        }
-                    }));
+                        }));
+                    });
         });
         return new VBox(6, heading, deploy, result);
     }
@@ -200,8 +208,18 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
         loadCatalog.setOnAction(event -> {
             loadCatalog.setDisable(true);
             result.setText("正在读取账号 Agent、目标和 Relay…");
+            JsonObject bindingArgs = new JsonObject();
+            bindingArgs.addProperty("sessionId", sessionId(context));
             ProgramCapabilityClient.invoke(context.capabilityBus(), null,
-                    LinkPluginContract.LINK_CATALOG_CAPABILITY, new JsonObject()).whenComplete((value, error) ->
+                    LinkPluginContract.LINK_CATALOG_CAPABILITY, new JsonObject()).thenCombine(
+                    ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                            LinkPluginContract.BINDING_GET_CAPABILITY, bindingArgs),
+                    (catalog, binding) -> {
+                        JsonObject combined = new JsonObject();
+                        combined.add("catalog", catalog);
+                        combined.add("binding", binding);
+                        return (JsonElement) combined;
+                    }).whenComplete((value, error) ->
                     Platform.runLater(() -> {
                         loadCatalog.setDisable(false);
                         if (error != null) {
@@ -210,16 +228,26 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
                         }
                         catalogTarget.getItems().clear();
                         catalogRelay.getItems().clear();
-                        JsonObject catalog = value.getAsJsonObject();
+                        JsonObject combined = value.getAsJsonObject();
+                        JsonObject catalog = combined.getAsJsonObject("catalog");
+                        JsonObject bindingResult = combined.getAsJsonObject("binding");
+                        JsonObject binding = bindingResult.has("binding")
+                                && bindingResult.get("binding").isJsonObject()
+                                ? bindingResult.getAsJsonObject("binding") : null;
                         catalog.getAsJsonArray("agents").forEach(agentValue -> {
                             JsonObject agent = agentValue.getAsJsonObject();
+                            java.util.List<String> addresses = new java.util.ArrayList<>();
+                            if (agent.has("addresses") && agent.get("addresses").isJsonArray()) {
+                                agent.getAsJsonArray("addresses").forEach(address ->
+                                        addresses.add(address.getAsString()));
+                            }
                             agent.getAsJsonArray("targets").forEach(targetValue -> {
                                 JsonObject target = targetValue.getAsJsonObject();
                                 if (!target.get("enabled").getAsBoolean()) return;
                                 catalogTarget.getItems().add(new CatalogTarget(
                                         agent.get("id").getAsString(), agent.get("name").getAsString(),
                                         agent.get("peerId").getAsString(), target.get("targetIp").getAsString(),
-                                        target.get("targetPort").getAsInt()));
+                                        target.get("targetPort").getAsInt(), java.util.List.copyOf(addresses)));
                             });
                         });
                         catalog.getAsJsonArray("relays").forEach(relayValue -> {
@@ -227,8 +255,21 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
                             catalogRelay.getItems().add(new CatalogRelay(relay.get("name").getAsString(),
                                     relay.get("peerId").getAsString(), relay.get("endpoint").getAsString()));
                         });
-                        if (!catalogTarget.getItems().isEmpty()) catalogTarget.setValue(catalogTarget.getItems().getFirst());
-                        result.setText("账号目录已加载；请选择目标并自动取票。");
+                        CatalogTarget selected = null;
+                        if (binding != null) {
+                            selected = catalogTarget.getItems().stream().filter(item ->
+                                    item.agentId().equals(binding.get("agentId").getAsString())
+                                    && item.targetIp().equals(binding.get("targetIp").getAsString())
+                                    && item.targetPort() == binding.get("targetPort").getAsInt())
+                                    .findFirst().orElse(null);
+                        }
+                        if (selected == null && !catalogTarget.getItems().isEmpty()) {
+                            selected = catalogTarget.getItems().getFirst();
+                        }
+                        catalogTarget.setValue(selected);
+                        result.setText(binding != null && selected != null
+                                ? "账号目录已加载，并已选择当前连接绑定的 Agent。"
+                                : "账号目录已加载；请选择目标并自动取票。");
                     }));
         });
         catalogTarget.setOnAction(event -> {
@@ -236,6 +277,7 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
             issueTicket.setDisable(selected == null);
             if (selected != null) {
                 agentPeer.setText(selected.agentPeer());
+                agentAddresses.setText(String.join("\n", selected.addresses()));
                 targetIp.setText(selected.targetIp());
                 targetPort.setText(Integer.toString(selected.targetPort()));
             }
@@ -384,12 +426,24 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
                 LinkPluginContract.TUNNEL_CLOSE_CAPABILITY, args);
     }
 
+    private static CompletableFuture<JsonElement> saveBinding(
+            CapabilityBus capabilityBus, String sessionId,
+            AgentDeploymentService.ProvisioningResult deployed) {
+        JsonObject args = new JsonObject();
+        args.addProperty("sessionId", sessionId);
+        args.addProperty("agentId", deployed.agentId());
+        args.addProperty("targetIp", deployed.targetIp());
+        args.addProperty("targetPort", deployed.targetPort());
+        return ProgramCapabilityClient.invoke(capabilityBus, null,
+                LinkPluginContract.BINDING_SAVE_CAPABILITY, args);
+    }
+
     private boolean isActive(PluginContext expected) {
         return active && context == expected;
     }
 
     private record CatalogTarget(String agentId, String agentName, String agentPeer,
-                                 String targetIp, int targetPort) {
+                                 String targetIp, int targetPort, java.util.List<String> addresses) {
         @Override public String toString() {
             return agentName + " · " + targetIp + ":" + targetPort;
         }

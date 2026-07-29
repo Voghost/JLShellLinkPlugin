@@ -15,5 +15,7 @@ Website 地址会立即清除旧站点令牌。Agent 凭据经 SFTP 写入随机
 
 当前 SHA-256 只保证传输完整性，不能证明发布者身份。自动下载和生产发布前必须增加
 签名清单、可信公钥轮换、版本回滚保护和平台代码签名。不得把票据、访问令牌、机器码
-或 SSH 凭据写入普通 PluginStorage、进程命令行或日志。当前后台 Agent 尚无系统服务
-级沙箱和崩溃拉起，Windows 远端文件 ACL 继承用户目录，均需在生产发布前加固。
+或 SSH 凭据写入普通 PluginStorage、进程命令行或日志。Linux systemd 用户服务启用
+`NoNewPrivileges`、`PrivateTmp` 和 0077 umask；macOS LaunchAgent 与 Windows
+SCM 配置自动拉起。Windows Agent 使用专属 `NT SERVICE\\JLShellLinkAgent` 虚拟账户，
+运行目录 ACL 仅保留部署用户、SYSTEM 和该服务账户；服务账户只获得读取和执行权限。

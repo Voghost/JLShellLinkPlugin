@@ -22,7 +22,8 @@
 - 浏览器登录必须使用回环 Authorization Code + PKCE；JWT 和稳定设备 ID 只能进入
   SecureStorage，Session 只能通过 Program capability 请求目录和短期票据。
 - Agent 注册凭据只能通过 SFTP 临时文件下发，Unix 先设为 0600 再替换；不得进入
-  命令行。自动下载、签名清单和系统级服务安装尚未完成，仍需用户确认部署。
+  命令行。部署使用 systemd 用户服务、macOS LaunchAgent 或 Windows SCM，并保持
+  用户明确确认；自动下载、签名清单和 Windows 显式 ACL 加固尚未完成。
 - 不提交 GitHub Token、PAT、账号信息、机器码或 SSH 凭据。
 
 验证命令：

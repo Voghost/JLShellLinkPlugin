@@ -47,8 +47,13 @@ Session 可读取账号 Agent/目标目录并自动签发单流票据，但访�
 
 “部署、注册并启动 Agent”会在远端生成 0600 Ed25519 身份、完成持钥注册、登记
 `127.0.0.1:22` 精确目标，并通过 SFTP 下发 0600 节点凭据与 Authority keyring。
-当前以用户后台进程启动，尚未安装成开机自启的 systemd/launchd/Windows Service；
-正式服务管理和异常拉起仍需后续加固。
+插件使用原生管理器安装并验证服务：Linux 为 `systemd --user`、macOS 为
+`LaunchAgent`、Windows 为 SCM Service；配置更新会重启既有服务。数字 IP SSH
+主机地址会作为精确 TCP/QUIC multiaddr 上报，域名不会进入 Rust 数据面的地址列表。
+
+Program 依据宿主 `SessionOpenedEvent` 保存 `projectId + connectionId + agentId +
+target` 本地绑定。Session 加载账号目录时优先选择当前连接绑定，并自动填入 Agent
+心跳上报的直连地址；重连后的新 sessionId 由宿主重新发布事件。
 
 ## SDK 与本地构建
 

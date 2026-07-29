@@ -19,6 +19,8 @@ public final class LinkPluginContract {
     public static final String AGENT_CHALLENGE_CAPABILITY = "link.agent.challenge";
     public static final String AGENT_REGISTER_CAPABILITY = "link.agent.register";
     public static final String AUTHORITY_CAPABILITY = "link.authority";
+    public static final String BINDING_GET_CAPABILITY = "link.binding.get";
+    public static final String BINDING_SAVE_CAPABILITY = "link.binding.save";
     public static final String VERSION = "0.1.0-SNAPSHOT";
     public static final String MIN_HOST_VERSION = "0.1.36";
     public static final String PROJECT_AGENT_REQUESTED_STATE = "link.agent.requested";

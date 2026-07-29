@@ -213,14 +213,18 @@ final class AgentDeploymentService {
                         LinkPluginContract.ACCOUNT_STATUS_CAPABILITY, new JsonObject()),
                         (authority, account) -> new RuntimeFiles(authority.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                                 registration.get("credential").getAsString(),
-                                account.getAsJsonObject().get("baseUrl").getAsString()))
+                                account.getAsJsonObject().get("baseUrl").getAsString(), null, null))
+                .thenCombine(ProgramCapabilityClient.invoke(capabilityBus, null,
+                        LinkPluginContract.LINK_CATALOG_CAPABILITY, new JsonObject()),
+                        AgentDeploymentService::withRelay)
                 .thenCompose(files -> writeRuntimeFiles(platform, files)
-                        .thenCompose(ignored -> startAgent(platform, deployed, files.baseUrl()))
-                        .thenApply(ignored -> {
+                        .thenCompose(ignored -> startAgent(platform, deployed, files))
+                        .thenApply(serviceManager -> {
                             JsonObject agent = registration.getAsJsonObject("agent");
                             return new ProvisioningResult(deployed.platform(), deployed.architecture(),
                                     deployed.remotePath(), agent.get("id").getAsString(),
-                                    agent.get("peerId").getAsString(), "127.0.0.1", 22);
+                                    agent.get("peerId").getAsString(), "127.0.0.1", 22,
+                                    serviceManager);
                         }));
     }
 
@@ -245,34 +249,22 @@ final class AgentDeploymentService {
                         .thenCompose(ignored -> CompletableFuture.failedFuture(error)));
     }
 
-    private CompletableFuture<Void> startAgent(RemotePlatform platform, DeploymentResult deployed, String baseUrl) {
-        String directory = platform.remoteDirectory();
-        String identity = directory + "/agent-identity.key";
-        String authority = directory + "/authority.json";
-        String credential = directory + "/agent-token";
-        String command;
-        if (platform.windows()) {
-            String arguments = String.join(" ", java.util.List.of(
-                    "--identity", powershellArgument(identity), "--authority-public", powershellArgument(authority),
-                    "--allow-target", "127.0.0.1:22", "--listen", "/ip4/0.0.0.0/tcp/7001",
-                    "--listen", "/ip4/0.0.0.0/udp/7001/quic-v1", "--control-plane-url",
-                    powershellArgument(baseUrl), "--credential-file", powershellArgument(credential)));
-            command = "powershell -NoProfile -NonInteractive -Command \"Start-Process -WindowStyle Hidden "
-                    + "-FilePath '" + powershellLiteral(deployed.remotePath()) + "' -ArgumentList '"
-                    + powershellLiteral(arguments) + "'\"";
-        } else {
-            command = "nohup " + shellQuote(deployed.remotePath())
-                    + " --identity " + shellQuote(identity)
-                    + " --authority-public " + shellQuote(authority)
-                    + " --allow-target 127.0.0.1:22"
-                    + " --listen /ip4/0.0.0.0/tcp/7001"
-                    + " --listen /ip4/0.0.0.0/udp/7001/quic-v1"
-                    + " --control-plane-url " + shellQuote(baseUrl)
-                    + " --credential-file " + shellQuote(credential)
-                    + " > " + shellQuote(directory + "/agent.log") + " 2>&1 < /dev/null & echo $! > "
-                    + shellQuote(directory + "/agent.pid");
-        }
-        return requireSuccess(ssh.commandExecutor().execute(command, COMMAND_TIMEOUT), "Cannot start Agent process");
+    private CompletableFuture<String> startAgent(
+            RemotePlatform platform, DeploymentResult deployed, RuntimeFiles files) {
+        return new AgentServiceInstaller(ssh).install(platform, deployed.remotePath(), files.baseUrl(),
+                files.relayAddress(), files.relayPeer());
+    }
+
+    private static RuntimeFiles withRelay(RuntimeFiles files, com.google.gson.JsonElement catalogValue) {
+        com.google.gson.JsonArray relays = catalogValue.getAsJsonObject().getAsJsonArray("relays");
+        if (relays == null || relays.isEmpty()) return files;
+        JsonObject relay = java.util.stream.StreamSupport.stream(relays.spliterator(), false)
+                .map(com.google.gson.JsonElement::getAsJsonObject)
+                .filter(value -> "ONLINE".equals(value.get("state").getAsString()))
+                .findFirst().orElse(null);
+        if (relay == null) return files;
+        return new RuntimeFiles(files.authority(), files.credential(), files.baseUrl(),
+                relay.get("endpoint").getAsString(), relay.get("peerId").getAsString());
     }
 
     private static String shellCommand(RemotePlatform platform, String executable, String... arguments) {
@@ -325,8 +317,10 @@ final class AgentDeploymentService {
     }
 
     record ProvisioningResult(String platform, String architecture, String remotePath,
-                              String agentId, String agentPeerId, String targetIp, int targetPort) { }
+                              String agentId, String agentPeerId, String targetIp, int targetPort,
+                              String serviceManager) { }
 
     private record AgentIdentity(String identityFile, String peerId, String publicKey) { }
-    private record RuntimeFiles(byte[] authority, String credential, String baseUrl) { }
+    private record RuntimeFiles(byte[] authority, String credential, String baseUrl,
+                                String relayAddress, String relayPeer) { }
 }
