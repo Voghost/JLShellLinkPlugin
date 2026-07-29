@@ -11,6 +11,14 @@ public final class LinkPluginContract {
     public static final String TUNNEL_CLOSE_CAPABILITY = "link.tunnel.close";
     public static final String PROJECT_AGENT_INTENT_CAPABILITY = "link.project.agent-intent";
     public static final String AGENT_INSTALL_SPEC_CAPABILITY = "link.agent.install-spec";
+    public static final String ACCOUNT_STATUS_CAPABILITY = "link.account.status";
+    public static final String ACCOUNT_LOGIN_CAPABILITY = "link.account.login";
+    public static final String ACCOUNT_LOGOUT_CAPABILITY = "link.account.logout";
+    public static final String LINK_CATALOG_CAPABILITY = "link.catalog";
+    public static final String TICKET_ISSUE_CAPABILITY = "link.ticket.issue";
+    public static final String AGENT_CHALLENGE_CAPABILITY = "link.agent.challenge";
+    public static final String AGENT_REGISTER_CAPABILITY = "link.agent.register";
+    public static final String AUTHORITY_CAPABILITY = "link.authority";
     public static final String VERSION = "0.1.0-SNAPSHOT";
     public static final String MIN_HOST_VERSION = "0.1.36";
     public static final String PROJECT_AGENT_REQUESTED_STATE = "link.agent.requested";

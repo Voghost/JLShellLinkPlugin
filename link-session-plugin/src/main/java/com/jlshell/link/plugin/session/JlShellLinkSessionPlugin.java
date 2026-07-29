@@ -118,7 +118,7 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
         TitledPane tunnel = new TitledPane("打开 SSH/TCP 隧道（开发联调）", tunnelView(context));
         tunnel.setExpanded(false);
         Label note = new Label("当前支持从本地已校验发布目录部署 Linux x64、macOS ARM64 和 "
-                + "Windows x64 Agent。账号自动取票将在桌面 PKCE 接入后启用。 ");
+                + "Windows x64 Agent，并可在桌面 PKCE 登录后从账号目录自动签发短期票据。");
         note.setWrapText(true);
 
         VBox root = new VBox(10, title, runtimeResult, projectIntent, deployment, tunnel, note);
@@ -142,22 +142,25 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
     private VBox deploymentView(PluginContext context) {
         Label heading = new Label("Agent 自动部署");
         TextArea result = output("尚未检测远端平台。", 4);
-        Button deploy = new Button("检测平台并部署 Agent");
+        Button deploy = new Button("部署、注册并启动 Agent");
         SshSessionContext ssh = context.sshSession().orElse(null);
         deploy.setDisable(ssh == null);
         deploy.setOnAction(event -> {
             deploy.setDisable(true);
             result.setText("正在检测远端平台、校验本地发布物并上传…");
-            new AgentDeploymentService(ssh, context.capabilityBus()).deploy().whenComplete((deployed, error) ->
+            new AgentDeploymentService(ssh, context.capabilityBus()).deployAndRegister(ssh.displayName())
+                    .whenComplete((deployed, error) ->
                     Platform.runLater(() -> {
                         deploy.setDisable(false);
                         if (error != null) {
                             result.setText("部署失败：" + rootMessage(error));
                             context.showNotification("JLShell Link Agent 部署失败", NotificationLevel.ERROR);
                         } else {
-                            result.setText("部署完成\n平台：" + deployed.platform() + "/" + deployed.architecture()
-                                    + "\n路径：" + deployed.remotePath() + "\nSHA-256：" + deployed.sha256());
-                            context.showNotification("JLShell Link Agent 已安全上传", NotificationLevel.INFO);
+                            result.setText("部署并注册完成\n平台：" + deployed.platform() + "/" + deployed.architecture()
+                                    + "\n路径：" + deployed.remotePath() + "\nAgent PeerId："
+                                    + deployed.agentPeerId() + "\n授权目标：" + deployed.targetIp() + ":"
+                                    + deployed.targetPort());
+                            context.showNotification("JLShell Link Agent 已部署并启动", NotificationLevel.INFO);
                         }
                     }));
         });
@@ -184,9 +187,85 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
         ticket.setPromptText("网站签发的 base64url 票据");
         TextArea result = output("尚未打开隧道。", 4);
         Button open = new Button("打开本地隧道");
+        Button loadCatalog = new Button("加载账号 Agent / 目标");
+        ComboBox<CatalogTarget> catalogTarget = new ComboBox<>();
+        catalogTarget.setPromptText("选择已注册 Agent 和精确目标");
+        ComboBox<CatalogRelay> catalogRelay = new ComboBox<>();
+        catalogRelay.setPromptText("可选网站 Relay");
+        Button issueTicket = new Button("自动签发短期票据");
+        issueTicket.setDisable(true);
         Button close = new Button("关闭隧道");
         close.setDisable(true);
         AtomicReference<String> tunnelId = new AtomicReference<>();
+        loadCatalog.setOnAction(event -> {
+            loadCatalog.setDisable(true);
+            result.setText("正在读取账号 Agent、目标和 Relay…");
+            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                    LinkPluginContract.LINK_CATALOG_CAPABILITY, new JsonObject()).whenComplete((value, error) ->
+                    Platform.runLater(() -> {
+                        loadCatalog.setDisable(false);
+                        if (error != null) {
+                            result.setText("目录加载失败：" + rootMessage(error));
+                            return;
+                        }
+                        catalogTarget.getItems().clear();
+                        catalogRelay.getItems().clear();
+                        JsonObject catalog = value.getAsJsonObject();
+                        catalog.getAsJsonArray("agents").forEach(agentValue -> {
+                            JsonObject agent = agentValue.getAsJsonObject();
+                            agent.getAsJsonArray("targets").forEach(targetValue -> {
+                                JsonObject target = targetValue.getAsJsonObject();
+                                if (!target.get("enabled").getAsBoolean()) return;
+                                catalogTarget.getItems().add(new CatalogTarget(
+                                        agent.get("id").getAsString(), agent.get("name").getAsString(),
+                                        agent.get("peerId").getAsString(), target.get("targetIp").getAsString(),
+                                        target.get("targetPort").getAsInt()));
+                            });
+                        });
+                        catalog.getAsJsonArray("relays").forEach(relayValue -> {
+                            JsonObject relay = relayValue.getAsJsonObject();
+                            catalogRelay.getItems().add(new CatalogRelay(relay.get("name").getAsString(),
+                                    relay.get("peerId").getAsString(), relay.get("endpoint").getAsString()));
+                        });
+                        if (!catalogTarget.getItems().isEmpty()) catalogTarget.setValue(catalogTarget.getItems().getFirst());
+                        result.setText("账号目录已加载；请选择目标并自动取票。");
+                    }));
+        });
+        catalogTarget.setOnAction(event -> {
+            CatalogTarget selected = catalogTarget.getValue();
+            issueTicket.setDisable(selected == null);
+            if (selected != null) {
+                agentPeer.setText(selected.agentPeer());
+                targetIp.setText(selected.targetIp());
+                targetPort.setText(Integer.toString(selected.targetPort()));
+            }
+        });
+        catalogRelay.setOnAction(event -> {
+            CatalogRelay selected = catalogRelay.getValue();
+            if (selected != null) {
+                relayPeer.setText(selected.peerId());
+                relayAddress.setText(selected.endpoint());
+            }
+        });
+        issueTicket.setOnAction(event -> {
+            CatalogTarget selected = catalogTarget.getValue();
+            if (selected == null) return;
+            JsonObject args = new JsonObject();
+            args.addProperty("agentId", selected.agentId());
+            args.addProperty("targetIp", selected.targetIp());
+            args.addProperty("targetPort", selected.targetPort());
+            issueTicket.setDisable(true);
+            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                    LinkPluginContract.TICKET_ISSUE_CAPABILITY, args).whenComplete((value, error) ->
+                    Platform.runLater(() -> {
+                        issueTicket.setDisable(false);
+                        if (error != null) result.setText("票据签发失败：" + rootMessage(error));
+                        else {
+                            ticket.setText(value.getAsJsonObject().get("ticket").getAsString());
+                            result.setText("短期单流票据已签发，可立即打开隧道。");
+                        }
+                    }));
+        });
         open.setOnAction(event -> {
             JsonObject args;
             try {
@@ -236,6 +315,8 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
         });
         VBox content = new VBox(6,
                 new Label("Agent PeerId"), agentPeer,
+                loadCatalog, new Label("账号 Agent / 目标"), catalogTarget,
+                new Label("网站 Relay"), catalogRelay, issueTicket,
                 new Label("Agent 地址"), agentAddresses,
                 new Label("Relay 地址"), relayAddress,
                 new Label("Relay PeerId"), relayPeer,
@@ -305,6 +386,17 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
 
     private boolean isActive(PluginContext expected) {
         return active && context == expected;
+    }
+
+    private record CatalogTarget(String agentId, String agentName, String agentPeer,
+                                 String targetIp, int targetPort) {
+        @Override public String toString() {
+            return agentName + " · " + targetIp + ":" + targetPort;
+        }
+    }
+
+    private record CatalogRelay(String name, String peerId, String endpoint) {
+        @Override public String toString() { return name + " · " + endpoint; }
     }
 
     private static String rootMessage(Throwable error) {

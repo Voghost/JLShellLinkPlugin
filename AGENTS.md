@@ -19,8 +19,10 @@
   请求开关隧道，不得各自维护 Connector 进程。
 - Agent 部署必须先验证本地发布物摘要，上传到随机临时文件、验证远端摘要后再替换；
   不得把票据、账号令牌或 SSH 凭据写入普通 PluginStorage 或日志。
-- 自动下载、发布签名验证、账号取票和 Agent 服务启动尚未完成；实现前必须保持
-  当前“用户显式配置发布目录并确认部署”的边界。
+- 浏览器登录必须使用回环 Authorization Code + PKCE；JWT 和稳定设备 ID 只能进入
+  SecureStorage，Session 只能通过 Program capability 请求目录和短期票据。
+- Agent 注册凭据只能通过 SFTP 临时文件下发，Unix 先设为 0600 再替换；不得进入
+  命令行。自动下载、签名清单和系统级服务安装尚未完成，仍需用户确认部署。
 - 不提交 GitHub Token、PAT、账号信息、机器码或 SSH 凭据。
 
 验证命令：

@@ -9,7 +9,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
-import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -39,6 +38,7 @@ class ConnectorProcessManagerTest {
             commands.add(List.copyOf(command));
             if (command.contains("--print-identity")) {
                 return FakeProcess.finished("CONNECTOR_PEER_ID=12D3KooWConnector\n"
+                        + "CONNECTOR_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
                         + "CONNECTOR_EVENT=IDENTITY_READY\n");
             }
             if (command.contains("--version")) {

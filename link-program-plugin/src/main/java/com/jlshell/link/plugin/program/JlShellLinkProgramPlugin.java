@@ -32,6 +32,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private static final long MAX_AGENT_BYTES = 200L * 1024 * 1024;
     private ProgramPluginContext context;
     private ConnectorProcessManager connectorManager;
+    private LinkAccountClient accountClient;
     private final List<Registration> registrations = new ArrayList<>();
     private final Map<String, String> sessionProjects = new ConcurrentHashMap<>();
 
@@ -69,6 +70,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     public void activate(ProgramPluginContext context) {
         this.context = context;
         connectorManager = new ConnectorProcessManager(ConnectorConfiguration.load(context.storage()));
+        accountClient = new LinkAccountClient(context.storage(), context.secureStorage(), connectorManager);
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
                 .requiresSession(false)
@@ -95,6 +97,32 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 .requiresSession(false)
                 .handler((args, capabilityContext) -> agentInstallSpec(args))
                 .build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_STATUS_CAPABILITY)
+                .description("Return the encrypted Program-level Link account session state.")
+                .requiresSession(false)
+                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(accountClient.status()))
+                .build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY)
+                .description("Start browser Authorization Code + PKCE desktop login.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.startLogin()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY)
+                .description("Revoke and erase the encrypted Link account session.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.logout()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
+                .description("List owned Agents, targets and available Relays without exposing the account token.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TICKET_ISSUE_CAPABILITY)
+                .description("Issue a one-stream signed ticket for the registered Connector identity.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.issueTicket(args)).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_CHALLENGE_CAPABILITY)
+                .description("Issue an Agent proof-of-possession challenge.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.agentChallenge(args)).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_REGISTER_CAPABILITY)
+                .description("Register a proven Agent and its initial exact SSH target.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.registerAgent(args)).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AUTHORITY_CAPABILITY)
+                .description("Download the public Link ticket Authority keyring.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.authority()).build());
         if (context.projectIntegration().available()) {
             registrations.add(context.projectIntegration().register(new LinkProjectContribution(context.storage())));
         }
@@ -139,6 +167,19 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)) {
             context.capabilityRegistry().unregister(capability);
         }
+        for (String capability : List.of(
+                LinkPluginContract.ACCOUNT_STATUS_CAPABILITY,
+                LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY,
+                LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY,
+                LinkPluginContract.LINK_CATALOG_CAPABILITY,
+                LinkPluginContract.TICKET_ISSUE_CAPABILITY,
+                LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
+                LinkPluginContract.AGENT_REGISTER_CAPABILITY,
+                LinkPluginContract.AUTHORITY_CAPABILITY)) {
+            context.capabilityRegistry().unregister(capability);
+        }
+        accountClient.close();
+        accountClient = null;
         connectorManager.close();
         connectorManager = null;
         context.info("JLShell Link program plugin deactivated");
@@ -155,6 +196,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         identity.setPromptText("Connector 身份文件路径");
         TextField agents = new TextField(text(configuration.agentBundleDirectory()));
         agents.setPromptText("Agent 三平台二进制目录");
+        TextField website = new TextField(accountClient.configuredBaseUrl());
+        website.setPromptText("https://jlshell.example.com");
         Label status = new Label(statusText());
         status.setWrapText(true);
         Button save = new Button("保存并检测 Connector");
@@ -162,6 +205,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             try {
                 ConnectorConfiguration updated = new ConnectorConfiguration(
                         path(connector.getText()), path(identity.getText()), path(agents.getText())).normalized();
+                accountClient.configureBaseUrl(website.getText());
                 updated.save(context.storage());
                 connectorManager.configure(updated);
                 status.setText("配置已保存，正在检测 Connector 身份…");
@@ -173,10 +217,19 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         });
         Button refresh = new Button("刷新状态");
         refresh.setOnAction(event -> status.setText(statusText()));
+        Button login = new Button("使用浏览器登录");
+        login.setOnAction(event -> accountClient.startLogin().whenComplete((value, error) ->
+                javafx.application.Platform.runLater(() -> status.setText(error == null
+                        ? "登录已发起：" + value.getAsJsonObject().get("authorizationUrl").getAsString()
+                        : "登录失败：" + error.getMessage()))));
+        Button logout = new Button("退出账号");
+        logout.setOnAction(event -> accountClient.logout().whenComplete((value, error) ->
+                javafx.application.Platform.runLater(() -> status.setText(statusText()))));
         Label note = new Label("票据只写入 0600 临时文件，Connector 仅绑定回环地址；"
                 + "Agent 目录中的文件名必须使用发布约定名称。");
         note.setWrapText(true);
-        VBox root = new VBox(8, title, new Label("Connector"), connector,
+        VBox root = new VBox(8, title, new Label("Website"), website, login, logout,
+                new Label("Connector"), connector,
                 new Label("身份文件"), identity, new Label("Agent 发布目录"), agents,
                 save, refresh, status, note);
         root.setPadding(new Insets(12));
@@ -227,7 +280,9 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
 
     private String statusText() {
         JsonObject status = connectorManager.status();
-        return "Connector：" + status.get("state").getAsString()
+        JsonObject accountStatus = accountClient.status();
+        return "账号：" + accountStatus.get("state").getAsString()
+                + "；Connector：" + status.get("state").getAsString()
                 + "，活跃隧道：" + status.get("activeTunnels").getAsInt();
     }
 

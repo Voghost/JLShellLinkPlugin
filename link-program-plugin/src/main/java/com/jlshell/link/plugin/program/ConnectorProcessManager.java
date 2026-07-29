@@ -74,6 +74,11 @@ final class ConnectorProcessManager implements AutoCloseable {
         } else {
             result.addProperty("connectorPeerId", current.peerId());
         }
+        if (current.publicKey() == null) {
+            result.add("connectorPublicKey", com.google.gson.JsonNull.INSTANCE);
+        } else {
+            result.addProperty("connectorPublicKey", current.publicKey());
+        }
         result.addProperty("activeTunnels", tunnels.size());
         if (current.message() != null) {
             result.addProperty("message", current.message());
@@ -128,6 +133,25 @@ final class ConnectorProcessManager implements AutoCloseable {
             throw new IllegalStateException("Agent binary is missing: " + file);
         }
         return binary;
+    }
+
+    String peerId() {
+        return requireReadyProbe().peerId();
+    }
+
+    String publicKey() {
+        return requireReadyProbe().publicKey();
+    }
+
+    String signChallenge(String payload) throws Exception {
+        ConnectorConfiguration current = configuration;
+        requireRunnable(current.connectorBinary());
+        List<String> lines = readProcess(launcher.start(List.of(
+                current.connectorBinary().toString(), "--identity", current.identityFile().toString(),
+                "--identity-proof", payload)), Duration.ofSeconds(10));
+        return lines.stream().filter(line -> line.startsWith("CONNECTOR_PROOF_SIGNATURE="))
+                .map(line -> line.substring("CONNECTOR_PROOF_SIGNATURE=".length())).findFirst()
+                .orElseThrow(() -> new IllegalStateException("Connector did not return an identity proof"));
     }
 
     private JsonObject openBlocking(TunnelOpenRequest request) throws Exception {
@@ -273,7 +297,7 @@ final class ConnectorProcessManager implements AutoCloseable {
             probe = ProbeResult.notConfigured();
             return;
         }
-        probe = new ProbeResult(false, "PROBING", null, null, null);
+        probe = new ProbeResult(false, "PROBING", null, null, null, null);
         CompletableFuture.runAsync(() -> {
             ProbeResult result = probe(current);
             if (probeGeneration.get() == generation) {
@@ -295,12 +319,23 @@ final class ConnectorProcessManager implements AutoCloseable {
             String peerId = lines.stream().filter(line -> line.startsWith("CONNECTOR_PEER_ID="))
                     .map(line -> line.substring("CONNECTOR_PEER_ID=".length())).findFirst()
                     .orElseThrow(() -> new IllegalStateException("Connector did not report its PeerId"));
+            String publicKey = lines.stream().filter(line -> line.startsWith("CONNECTOR_PUBLIC_KEY="))
+                    .map(line -> line.substring("CONNECTOR_PUBLIC_KEY=".length())).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("Connector did not report its public key"));
             Process versionProcess = launcher.start(List.of(current.connectorBinary().toString(), "--version"));
             String version = readProcess(versionProcess, Duration.ofSeconds(5)).stream().findFirst().orElse(null);
-            return new ProbeResult(true, "READY", version, peerId, null);
+            return new ProbeResult(true, "READY", version, peerId, publicKey, null);
         } catch (Exception error) {
-            return new ProbeResult(false, "ERROR", null, null, rootMessage(error));
+            return new ProbeResult(false, "ERROR", null, null, null, rootMessage(error));
         }
+    }
+
+    private ProbeResult requireReadyProbe() {
+        ProbeResult current = probe;
+        if (!current.available() || current.peerId() == null || current.publicKey() == null) {
+            throw new IllegalStateException("Connector identity is not ready");
+        }
+        return current;
     }
 
     private static List<String> readProcess(Process process, Duration timeout) throws Exception {
@@ -415,9 +450,9 @@ final class ConnectorProcessManager implements AutoCloseable {
     }
 
     private record ProbeResult(boolean available, String state, String version,
-                               String peerId, String message) {
+                               String peerId, String publicKey, String message) {
         static ProbeResult notConfigured() {
-            return new ProbeResult(false, "NOT_CONFIGURED", null, null, null);
+            return new ProbeResult(false, "NOT_CONFIGURED", null, null, null, null);
         }
     }
 }

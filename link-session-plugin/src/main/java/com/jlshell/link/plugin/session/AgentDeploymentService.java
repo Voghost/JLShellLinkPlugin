@@ -34,6 +34,19 @@ final class AgentDeploymentService {
                                 .thenCompose(binary -> upload(platform, spec, binary))));
     }
 
+    CompletableFuture<ProvisioningResult> deployAndRegister(String agentName) {
+        return detectPlatform().thenCompose(platform -> installSpec(platform)
+                .thenCompose(spec -> loadBinary(spec)
+                        .thenCompose(binary -> upload(platform, spec, binary))
+                        .thenCompose(deployed -> identity(platform, deployed)
+                                .thenCompose(identity -> challenge(identity)
+                                        .thenCompose(challenge -> proof(platform, deployed, challenge)
+                                                .thenCompose(signature -> register(agentName, platform, identity,
+                                                        challenge, signature)
+                                                        .thenCompose(registration -> configureAndStart(platform,
+                                                                deployed, registration))))))));
+    }
+
     CompletableFuture<RemotePlatform> detectPlatform() {
         String unix = "printf 'OS=%s\\nARCH=%s\\nHOME=%s\\n' \"$(uname -s)\" \"$(uname -m)\" \"$HOME\"";
         return ssh.commandExecutor().execute(unix, COMMAND_TIMEOUT).thenCompose(output -> {
@@ -144,6 +157,145 @@ final class AgentDeploymentService {
                 "Cannot activate uploaded Agent binary");
     }
 
+    private CompletableFuture<AgentIdentity> identity(RemotePlatform platform, DeploymentResult deployed) {
+        String identityFile = platform.remoteDirectory() + "/agent-identity.key";
+        String command = shellCommand(platform, deployed.remotePath(),
+                "--identity", identityFile, "--print-identity");
+        return ssh.commandExecutor().execute(command, COMMAND_TIMEOUT).thenApply(output -> {
+            if (output.exitCode() != 0) throw new IllegalStateException("Cannot initialize Agent identity");
+            return new AgentIdentity(identityFile, outputValue(output, "AGENT_PEER_ID"),
+                    outputValue(output, "AGENT_PUBLIC_KEY"));
+        });
+    }
+
+    private CompletableFuture<JsonObject> challenge(AgentIdentity identity) {
+        JsonObject args = new JsonObject();
+        args.addProperty("publicKey", identity.publicKey());
+        return ProgramCapabilityClient.invoke(capabilityBus, null,
+                        LinkPluginContract.AGENT_CHALLENGE_CAPABILITY, args)
+                .thenApply(value -> value.getAsJsonObject());
+    }
+
+    private CompletableFuture<String> proof(RemotePlatform platform, DeploymentResult deployed,
+                                            JsonObject challenge) {
+        String command = shellCommand(platform, deployed.remotePath(),
+                "--identity", platform.remoteDirectory() + "/agent-identity.key",
+                "--identity-proof", challenge.get("payload").getAsString());
+        return ssh.commandExecutor().execute(command, COMMAND_TIMEOUT).thenApply(output -> {
+            if (output.exitCode() != 0) throw new IllegalStateException("Agent identity proof failed");
+            return outputValue(output, "AGENT_PROOF_SIGNATURE");
+        });
+    }
+
+    private CompletableFuture<JsonObject> register(String name, RemotePlatform platform, AgentIdentity identity,
+                                                   JsonObject challenge, String signature) {
+        JsonObject args = new JsonObject();
+        args.addProperty("name", name == null || name.isBlank() ? "JLShell Agent" : name.substring(0, Math.min(120, name.length())));
+        args.addProperty("platform", platform.platform());
+        args.addProperty("architecture", platform.architecture());
+        args.addProperty("publicKey", identity.publicKey());
+        args.addProperty("version", "0.1.0");
+        args.addProperty("challengeId", challenge.get("challengeId").getAsString());
+        args.addProperty("proofSignature", signature);
+        args.addProperty("targetIp", "127.0.0.1");
+        args.addProperty("targetPort", 22);
+        return ProgramCapabilityClient.invoke(capabilityBus, null,
+                        LinkPluginContract.AGENT_REGISTER_CAPABILITY, args)
+                .thenApply(value -> value.getAsJsonObject());
+    }
+
+    private CompletableFuture<ProvisioningResult> configureAndStart(RemotePlatform platform,
+                                                                    DeploymentResult deployed,
+                                                                    JsonObject registration) {
+        return ProgramCapabilityClient.invoke(capabilityBus, null,
+                        LinkPluginContract.AUTHORITY_CAPABILITY, new JsonObject())
+                .thenCombine(ProgramCapabilityClient.invoke(capabilityBus, null,
+                        LinkPluginContract.ACCOUNT_STATUS_CAPABILITY, new JsonObject()),
+                        (authority, account) -> new RuntimeFiles(authority.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                                registration.get("credential").getAsString(),
+                                account.getAsJsonObject().get("baseUrl").getAsString()))
+                .thenCompose(files -> writeRuntimeFiles(platform, files)
+                        .thenCompose(ignored -> startAgent(platform, deployed, files.baseUrl()))
+                        .thenApply(ignored -> {
+                            JsonObject agent = registration.getAsJsonObject("agent");
+                            return new ProvisioningResult(deployed.platform(), deployed.architecture(),
+                                    deployed.remotePath(), agent.get("id").getAsString(),
+                                    agent.get("peerId").getAsString(), "127.0.0.1", 22);
+                        }));
+    }
+
+    private CompletableFuture<Void> writeRuntimeFiles(RemotePlatform platform, RuntimeFiles files) {
+        String credential = platform.remoteDirectory() + "/agent-token";
+        String authority = platform.remoteDirectory() + "/authority.json";
+        return writeSecret(platform, credential,
+                files.credential().getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                .thenCompose(ignored -> writeSecret(platform, authority, files.authority()));
+    }
+
+    private CompletableFuture<Void> writeSecret(RemotePlatform platform, String destination, byte[] value) {
+        String temporary = destination + ".tmp-" + java.util.UUID.randomUUID();
+        CompletableFuture<Void> result = ssh.fileExplorer().writeFile(temporary, value);
+        if (!platform.windows()) {
+            result = result.thenCompose(ignored -> requireSuccess(ssh.commandExecutor().execute(
+                    "chmod 600 " + shellQuote(temporary), COMMAND_TIMEOUT), "Cannot protect Agent runtime file"));
+        }
+        return result.thenCompose(ignored -> promote(platform, temporary, destination))
+                .exceptionallyCompose(error -> ssh.fileExplorer().deleteFile(temporary)
+                        .handle((ignored, cleanupError) -> (Void) null)
+                        .thenCompose(ignored -> CompletableFuture.failedFuture(error)));
+    }
+
+    private CompletableFuture<Void> startAgent(RemotePlatform platform, DeploymentResult deployed, String baseUrl) {
+        String directory = platform.remoteDirectory();
+        String identity = directory + "/agent-identity.key";
+        String authority = directory + "/authority.json";
+        String credential = directory + "/agent-token";
+        String command;
+        if (platform.windows()) {
+            String arguments = String.join(" ", java.util.List.of(
+                    "--identity", powershellArgument(identity), "--authority-public", powershellArgument(authority),
+                    "--allow-target", "127.0.0.1:22", "--listen", "/ip4/0.0.0.0/tcp/7001",
+                    "--listen", "/ip4/0.0.0.0/udp/7001/quic-v1", "--control-plane-url",
+                    powershellArgument(baseUrl), "--credential-file", powershellArgument(credential)));
+            command = "powershell -NoProfile -NonInteractive -Command \"Start-Process -WindowStyle Hidden "
+                    + "-FilePath '" + powershellLiteral(deployed.remotePath()) + "' -ArgumentList '"
+                    + powershellLiteral(arguments) + "'\"";
+        } else {
+            command = "nohup " + shellQuote(deployed.remotePath())
+                    + " --identity " + shellQuote(identity)
+                    + " --authority-public " + shellQuote(authority)
+                    + " --allow-target 127.0.0.1:22"
+                    + " --listen /ip4/0.0.0.0/tcp/7001"
+                    + " --listen /ip4/0.0.0.0/udp/7001/quic-v1"
+                    + " --control-plane-url " + shellQuote(baseUrl)
+                    + " --credential-file " + shellQuote(credential)
+                    + " > " + shellQuote(directory + "/agent.log") + " 2>&1 < /dev/null & echo $! > "
+                    + shellQuote(directory + "/agent.pid");
+        }
+        return requireSuccess(ssh.commandExecutor().execute(command, COMMAND_TIMEOUT), "Cannot start Agent process");
+    }
+
+    private static String shellCommand(RemotePlatform platform, String executable, String... arguments) {
+        if (platform.windows()) {
+            String joined = java.util.Arrays.stream(arguments).map(AgentDeploymentService::powershellArgument)
+                    .collect(java.util.stream.Collectors.joining(" "));
+            return "powershell -NoProfile -NonInteractive -Command \"& '"
+                    + powershellLiteral(executable) + "' " + joined + "\"";
+        }
+        return shellQuote(executable) + " " + java.util.Arrays.stream(arguments)
+                .map(AgentDeploymentService::shellQuote).collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    private static String outputValue(CommandOutput output, String name) {
+        return output.stdout().lines().filter(line -> line.startsWith(name + "="))
+                .map(line -> line.substring(name.length() + 1).trim()).findFirst()
+                .orElseThrow(() -> new IllegalStateException("Agent omitted " + name));
+    }
+
+    private static String powershellArgument(String value) {
+        return "'" + powershellLiteral(value) + "'";
+    }
+
     private static CompletableFuture<Void> requireSuccess(CompletableFuture<CommandOutput> future, String message) {
         return future.thenApply(output -> {
             if (output.exitCode() != 0) {
@@ -171,4 +323,10 @@ final class AgentDeploymentService {
     record DeploymentResult(String platform, String architecture, String remotePath,
                             String sha256, long size) {
     }
+
+    record ProvisioningResult(String platform, String architecture, String remotePath,
+                              String agentId, String agentPeerId, String targetIp, int targetPort) { }
+
+    private record AgentIdentity(String identityFile, String peerId, String publicKey) { }
+    private record RuntimeFiles(byte[] authority, String credential, String baseUrl) { }
 }
