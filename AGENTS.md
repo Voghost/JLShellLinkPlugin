@@ -23,7 +23,8 @@
   SecureStorage，Session 只能通过 Program capability 请求目录和短期票据。
 - Agent 注册凭据只能通过 SFTP 临时文件下发，Unix 先设为 0600 再替换；不得进入
   命令行。部署使用 systemd 用户服务、macOS LaunchAgent 或 Windows SCM，并保持
-  用户明确确认；自动下载、签名清单和 Windows 显式 ACL 加固尚未完成。
+  用户明确确认；Windows SCM 必须使用专属虚拟服务账户并限制运行目录 ACL。自动下载、
+  签名清单、回滚保护和平台代码签名尚未完成。
 - 不提交 GitHub Token、PAT、账号信息、机器码或 SSH 凭据。
 
 验证命令：
