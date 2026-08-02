@@ -20,7 +20,7 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jlshell.plugin-api.version>0.1.36</jlshell.plugin-api.version>
+        <jlshell.plugin-api.version>1.0.0</jlshell.plugin-api.version>
         <javafx.version>21.0.5</javafx.version>
         <gson.version>2.11.0</gson.version>
         <junit.version>5.11.4</junit.version>
@@ -117,4 +117,3 @@
         </pluginManagement>
     </build>
 </project>
-
