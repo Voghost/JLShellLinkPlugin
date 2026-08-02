@@ -9,7 +9,7 @@
     <artifactId>link-plugin-common</artifactId>
     <dependencies>
         <dependency>
-            <groupId>com.jlshell</groupId>
+            <groupId>net.oomn.jlshell</groupId>
             <artifactId>plugin-api</artifactId>
             <scope>provided</scope>
         </dependency>
@@ -29,4 +29,3 @@
         </dependency>
     </dependencies>
 </project>
-

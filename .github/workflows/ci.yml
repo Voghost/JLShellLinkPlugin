@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   build:
@@ -23,12 +22,7 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-          server-id: github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
       - name: Test and package plugins
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn -B -ntp verify
       - name: Verify host API is excluded from fat JARs
         shell: bash
