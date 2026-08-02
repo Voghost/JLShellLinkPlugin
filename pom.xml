@@ -13,14 +13,13 @@
     <modules>
         <module>link-plugin-common</module>
         <module>link-program-plugin</module>
-        <module>link-session-plugin</module>
         <module>link-plugin-distribution</module>
     </modules>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jlshell.plugin-api.version>1.0.0</jlshell.plugin-api.version>
+        <jlshell.plugin-api.version>1.1.0</jlshell.plugin-api.version>
         <javafx.version>21.0.5</javafx.version>
         <gson.version>2.11.0</gson.version>
         <junit.version>5.11.4</junit.version>
@@ -98,6 +97,14 @@
                                 </artifactSet>
                                 <transformers>
                                     <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                    <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                        <manifestEntries>
+                                            <Implementation-Version>${project.version}</Implementation-Version>
+                                            <JLShell-Plugin-Id>${jlshell.plugin.id}</JLShell-Plugin-Id>
+                                            <JLShell-Plugin-Version>${jlshell.plugin.version}</JLShell-Plugin-Version>
+                                            <JLShell-Plugin-Scope>${jlshell.plugin.scope}</JLShell-Plugin-Scope>
+                                        </manifestEntries>
+                                    </transformer>
                                 </transformers>
                             </configuration>
                         </execution>

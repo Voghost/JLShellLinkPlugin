@@ -7,6 +7,11 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
     <artifactId>link-program-plugin</artifactId>
+    <properties>
+        <jlshell.plugin.id>com.jlshell.link.program</jlshell.plugin.id>
+        <jlshell.plugin.version>${project.version}</jlshell.plugin.version>
+        <jlshell.plugin.scope>PROGRAM</jlshell.plugin.scope>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.jlshell.link</groupId>
@@ -34,5 +39,33 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
-    <build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId></plugin></plugins></build>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Implementation-Version>${project.version}</Implementation-Version>
+                            <JLShell-Plugin-Id>${jlshell.plugin.id}</JLShell-Plugin-Id>
+                            <JLShell-Plugin-Version>${jlshell.plugin.version}</JLShell-Plugin-Version>
+                            <JLShell-Plugin-Scope>${jlshell.plugin.scope}</JLShell-Plugin-Scope>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+            </plugin>
+        </plugins>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+    </build>
 </project>

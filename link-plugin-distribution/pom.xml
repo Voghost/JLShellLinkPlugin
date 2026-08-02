@@ -15,12 +15,6 @@
             <version>${project.version}</version>
             <classifier>fat</classifier>
         </dependency>
-        <dependency>
-            <groupId>com.jlshell.link</groupId>
-            <artifactId>link-session-plugin</artifactId>
-            <version>${project.version}</version>
-            <classifier>fat</classifier>
-        </dependency>
     </dependencies>
     <build>
         <plugins>
@@ -36,7 +30,7 @@
                         <configuration>
                             <outputDirectory>${project.build.directory}/plugins</outputDirectory>
                             <includeGroupIds>com.jlshell.link</includeGroupIds>
-                            <includeArtifactIds>link-program-plugin,link-session-plugin</includeArtifactIds>
+                            <includeArtifactIds>link-program-plugin</includeArtifactIds>
                             <includeClassifiers>fat</includeClassifiers>
                             <excludeTransitive>true</excludeTransitive>
                         </configuration>
@@ -46,4 +40,3 @@
         </plugins>
     </build>
 </project>
-

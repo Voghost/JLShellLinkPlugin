@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "com.jlshell.link.program",
+  "version": "${project.version}",
+  "scope": "PROGRAM",
+  "entrypoint": "com.jlshell.link.plugin.program.JlShellLinkProgramPlugin",
+  "defaultLocale": "zh-CN",
+  "displayName": "JLShell Link",
+  "description": "Deploys JLShell Link Agents and manages encrypted P2P or Relay SSH tunnels.",
+  "author": "Voghost",
+  "license": "Proprietary",
+  "repository": "https://github.com/Voghost/JLShellLinkPlugin",
+  "minHostVersion": "0.1.62"
+}
