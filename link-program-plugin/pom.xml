@@ -14,7 +14,7 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.jlshell</groupId>
+            <groupId>net.oomn.jlshell</groupId>
             <artifactId>plugin-api</artifactId>
             <scope>provided</scope>
         </dependency>
@@ -36,4 +36,3 @@
     </dependencies>
     <build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId></plugin></plugins></build>
 </project>
-

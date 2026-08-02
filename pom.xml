@@ -28,20 +28,10 @@
         <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
-    <repositories>
-        <repository>
-            <id>github</id>
-            <name>JLShell Plugin SDK</name>
-            <url>https://maven.pkg.github.com/voghost/JLShell</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-    </repositories>
-
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>com.jlshell</groupId>
+                <groupId>net.oomn.jlshell</groupId>
                 <artifactId>plugin-api</artifactId>
                 <version>${jlshell.plugin-api.version}</version>
             </dependency>
@@ -100,7 +90,7 @@
                                 <createDependencyReducedPom>false</createDependencyReducedPom>
                                 <artifactSet>
                                     <excludes>
-                                        <exclude>com.jlshell:plugin-api</exclude>
+                                        <exclude>net.oomn.jlshell:plugin-api</exclude>
                                         <exclude>org.openjfx:*</exclude>
                                         <exclude>org.slf4j:*</exclude>
                                         <exclude>ch.qos.logback:*</exclude>

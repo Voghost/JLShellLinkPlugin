@@ -13,7 +13,7 @@
 
 - 使用 Java 21 和 Maven 3.9+。
 - Program 与 Session 插件必须保持独立 ServiceLoader 入口和独立 fat JAR。
-- `com.jlshell:plugin-api`、JavaFX 和宿主日志依赖必须为 provided/排除项。
+- `net.oomn.jlshell:plugin-api`、JavaFX 和宿主日志依赖必须为 provided/排除项。
 - 稳定公共能力为 `link.runtime.status`；破坏性变更需要新增能力名或版本。
 - Program 插件独占 Connector 进程生命周期；Session 插件只能通过全局 capability
   请求开关隧道，不得各自维护 Connector 进程。
@@ -30,5 +30,5 @@
 验证命令：
 
 ```bash
-mvn verify -Djlshell.plugin-api.version=0.1.0.RELEASE
+mvn -U verify
 ```
