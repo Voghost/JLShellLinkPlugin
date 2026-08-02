@@ -1,15 +1,13 @@
-package com.jlshell.link.plugin.session;
+package com.jlshell.link.plugin.program.session;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
-import java.util.ServiceLoader;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.gson.JsonElement;
 import com.jlshell.link.plugin.common.LinkPluginContract;
-import com.jlshell.plugin.api.JlShellPlugin;
 import com.jlshell.plugin.api.rpc.Capability;
 import com.jlshell.plugin.api.rpc.CapabilityBus;
 import com.jlshell.plugin.api.rpc.CapabilitySpec;
@@ -17,13 +15,14 @@ import com.jlshell.plugin.api.rpc.RpcRequest;
 import com.jlshell.plugin.api.rpc.RpcResponse;
 import org.junit.jupiter.api.Test;
 
-class JlShellLinkSessionPluginTest {
+class LinkSessionContributionTest {
 
     @Test
-    void serviceLoaderDiscoversSessionPlugin() {
-        assertThat(ServiceLoader.load(JlShellPlugin.class).stream()
-                .map(provider -> provider.get().id()))
-                .contains(LinkPluginContract.SESSION_PLUGIN_ID);
+    void exposesSingleProgramOwnedSessionContribution() {
+        LinkSessionContribution contribution = new LinkSessionContribution();
+
+        assertThat(contribution.displayName()).isEqualTo("JLShell Link");
+        assertThat(contribution.description()).contains("Agent");
     }
 
     @Test
@@ -41,7 +40,7 @@ class JlShellLinkSessionPluginTest {
             @Override public List<Capability> listRegisteredCapabilities(String sessionId) { return List.of(); }
         };
 
-        JsonElement result = new JlShellLinkSessionPlugin().loadRuntimeStatus(bus).join();
+        JsonElement result = LinkSessionController.loadRuntimeStatus(bus).join();
 
         assertThat(captured.get().sessionId()).isNull();
         assertThat(captured.get().pluginId()).isEqualTo(LinkPluginContract.PROGRAM_PLUGIN_ID);
@@ -63,7 +62,7 @@ class JlShellLinkSessionPluginTest {
             @Override public List<Capability> listRegisteredCapabilities(String sessionId) { return List.of(); }
         };
 
-        JsonElement result = new JlShellLinkSessionPlugin().loadProjectIntent(bus, "session-1").join();
+        JsonElement result = LinkSessionController.loadProjectIntent(bus, "session-1").join();
 
         assertThat(result.getAsJsonObject().get("requested").getAsBoolean()).isTrue();
         assertThat(captured.get().sessionId()).isNull();
@@ -74,7 +73,7 @@ class JlShellLinkSessionPluginTest {
 
     @Test
     void buildsTunnelArgumentsWithoutPuttingTicketOnACommandLine() {
-        var args = JlShellLinkSessionPlugin.tunnelArgs(
+        var args = LinkSessionController.tunnelArgs(
                 "12D3KooWAbcdefghijkmnopqrstuvwxyz123456789",
                 "/ip4/127.0.0.1/tcp/7001\n/ip6/::1/udp/7001/quic-v1",
                 "", "", "auto", "AQID", "127.0.0.1", "22");

@@ -23,10 +23,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp link-program-plugin/target/*-fat.jar dist/jlshell-link-program-plugin.jar
-          cp link-session-plugin/target/*-fat.jar dist/jlshell-link-session-plugin.jar
+          cp link-program-plugin/target/*-fat.jar dist/jlshell-link-plugin.jar
           sha256sum dist/*.jar > dist/SHA256SUMS
       - name: Create private GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "JLShell Link Program and Session plugins."
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "Single JLShell Link Program plugin with managed SSH session integration."
