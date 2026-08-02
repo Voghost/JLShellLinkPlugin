@@ -13,8 +13,10 @@
 
 - 使用 Java 21 和 Maven 3.9+。
 - 产品只发布一个 `com.jlshell.link.program` Program 插件、一个 ServiceLoader 入口和
-  一个 fat JAR。SSH 会话功能必须通过 Plugin SDK 1.1.0 的 `sessionIntegration()`
+  一个 fat JAR。SSH 会话功能必须通过 Plugin SDK 1.1.0+ 的 `sessionIntegration()`
   贡献，禁止重新引入独立 Session 插件或第二个插件 ID。
+- 已有项目的 Link 配置和诊断必须通过 Plugin SDK 1.2.0 的项目管理贡献展示，不能只在
+  新建项目时显示一次性复选框。
 - `net.oomn.jlshell:plugin-api`、JavaFX 和宿主日志依赖必须为 provided/排除项。
 - 稳定公共能力为 `link.runtime.status`；破坏性变更需要新增能力名或版本。
 - Program 插件独占 Connector 进程生命周期；各会话控制器只能通过 Program 内部能力

@@ -11,6 +11,7 @@
         <jlshell.plugin.id>com.jlshell.link.program</jlshell.plugin.id>
         <jlshell.plugin.version>${project.version}</jlshell.plugin.version>
         <jlshell.plugin.scope>PROGRAM</jlshell.plugin.scope>
+        <jlshell.link.runtime.bundle>${project.basedir}/../.runtime-bundle</jlshell.link.runtime.bundle>
     </properties>
     <dependencies>
         <dependency>
@@ -65,6 +66,11 @@
             <resource>
                 <directory>src/main/resources</directory>
                 <filtering>true</filtering>
+            </resource>
+            <resource>
+                <directory>${jlshell.link.runtime.bundle}</directory>
+                <targetPath>META-INF/jlshell-link/runtime</targetPath>
+                <filtering>false</filtering>
             </resource>
         </resources>
     </build>

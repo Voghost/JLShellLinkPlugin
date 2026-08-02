@@ -34,6 +34,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 final class LinkAccountClient implements AutoCloseable {
+    static final String DEFAULT_BASE_URL = "https://jlshell.oomn.net";
     private static final String BASE_URL_KEY = "account.base-url";
     private static final String TOKEN_KEY = "account.access-token";
     private static final String TOKEN_EXPIRY_KEY = "account.token-expiry";
@@ -70,6 +71,8 @@ final class LinkAccountClient implements AutoCloseable {
         String configured = storage == null ? null : storage.get(BASE_URL_KEY);
         if (configured != null && !configured.isBlank()) {
             baseUri = validateBaseUri(configured);
+        } else {
+            baseUri = validateBaseUri(DEFAULT_BASE_URL);
         }
         if (secrets.available()) {
             token = secret(TOKEN_KEY);

@@ -17,8 +17,42 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Download the matching private Link runtime bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.JLSHELL_LINK_RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Missing JLSHELL_LINK_RELEASE_TOKEN for Voghost/JLShellLink private releases" >&2
+            exit 1
+          fi
+          mkdir -p runtime-download .runtime-bundle
+          gh release download "$GITHUB_REF_NAME" \
+            --repo Voghost/JLShellLink \
+            --pattern 'jlshell-link-plugin-runtime-*.tar.gz*' \
+            --dir runtime-download
+          cd runtime-download
+          sha256sum --check jlshell-link-plugin-runtime-*.tar.gz.sha256
+          tar -xzf jlshell-link-plugin-runtime-*.tar.gz -C ../.runtime-bundle
       - name: Test and package
         run: mvn -B -ntp verify
+      - name: Require the verified native runtime in the Program plugin
+        shell: bash
+        run: |
+          jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          for required in \
+            META-INF/jlshell-link/runtime/manifest.json \
+            META-INF/jlshell-link/runtime/bin/jlshell-connector-linux-x64 \
+            META-INF/jlshell-link/runtime/bin/jlshell-connector-macos-arm64 \
+            META-INF/jlshell-link/runtime/bin/jlshell-connector-windows-x64.exe \
+            META-INF/jlshell-link/runtime/bin/jlshell-agent-linux-x64 \
+            META-INF/jlshell-link/runtime/bin/jlshell-agent-macos-arm64 \
+            META-INF/jlshell-link/runtime/bin/jlshell-agent-windows-x64.exe; do
+            jar tf "$jar_file" | grep -qx "$required" || {
+              echo "Plugin release is missing $required" >&2
+              exit 1
+            }
+          done
       - name: Prepare release assets
         shell: bash
         run: |

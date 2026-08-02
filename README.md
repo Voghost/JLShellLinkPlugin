@@ -4,15 +4,18 @@ JLShell Link 的独立私有插件工程，仓库为 `Voghost/JLShellLinkPlugin`
 Program 插件 JAR，插件标识为 `com.jlshell.link.program`。它统一管理 Connector 身份、
 账号与安全存储、项目 Agent 意图、Agent 部署以及隧道生命周期。
 
-Program 插件通过 JLShell Plugin SDK 1.1.0 的 `sessionIntegration()` 注册 SSH 会话贡献。
+Program 插件通过 JLShell Plugin SDK 1.1.0 的 `sessionIntegration()` 注册 SSH 会话贡献，
+并使用 SDK 1.2.0 的项目管理贡献展示已有项目状态和修复引导。
 宿主在用户打开 JLShell Link 时提供当前 `SshSessionContext`，所以三平台检测、SFTP 安全
 上传和隧道界面都在同一个 Program 插件中完成，不再发布独立 Session 插件、第二个
 ServiceLoader 入口或第二个插件 ID。
 
-当前阶段不会自动下载二进制。用户需要在 Program 设置页显式配置 Website、
-`jlshell-connector`、Connector 身份文件和 Agent 发布目录。账号令牌只保存在 Program
-插件的宿主 SecureStorage 中，不传给会话控制器或写入日志；签名清单验证仍属于独立
-安全发布批次。
+正式插件 JAR 会直接内置 Linux x64、macOS ARM64、Windows x64 的 Connector 和 Agent。
+首次激活时自动解包到 `~/.jlshell/link/runtime/<version>/`，逐文件核对清单中的大小和
+SHA-256，并设置仅当前用户可读写执行的权限。Website 默认使用
+`https://jlshell.oomn.net`，Connector、身份文件和 Agent 目录无需普通用户填写；设置页
+只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 Program 插件的宿主
+SecureStorage 中，不传给会话控制器或写入日志。
 
 ## 阶段 3 第一批能力
 
@@ -30,8 +33,9 @@ Program 插件注册以下稳定 capability：
 Connector 只使用 `127.0.0.1:0` 打开本地监听。签名票据写入插件私有运行目录中的
 0600 临时文件，Connector 报告监听地址后立即删除；插件停用时终止全部子进程。
 
-项目创建页可以勾选 Agent 引导。会话贡献部署时先检测远端操作系统和架构，再从
-配置目录选择以下固定名称之一：
+新建项目默认启用 Agent 引导；已有项目的管理页会展示账号、内置运行时和 Connector
+状态，以及可执行的登录/修复入口。会话贡献提供检测、确认、上传、注册、服务安装和
+连接绑定的分步向导，并从内置目录选择以下固定名称之一：
 
 ```text
 jlshell-agent-linux-x64
@@ -40,8 +44,8 @@ jlshell-agent-windows-x64.exe
 ```
 
 上传使用随机临时文件，本地和远端 SHA-256 一致后才执行 `chmod 700`（Unix）并替换
-正式文件。当前摘要用于传输完整性校验；在签名发布清单启用前，配置的本地发布目录
-仍必须被视为可信输入。
+正式文件。Session 中的登录按钮调用同一个 Program 账号能力，复用全局 PKCE 登录态，
+不会生成第二份账号或令牌。
 
 Program 使用系统浏览器和本机临时回环监听完成 Authorization Code + PKCE S256，
 随后调用 Connector 对一次性 challenge 签名，将桌面设备绑定到 Connector PeerId。
@@ -61,7 +65,7 @@ target` 本地绑定。会话贡献加载账号目录时优先选择当前连接
 ## SDK 与本地构建
 
 默认从 Maven Central 获取支持 Program 会话贡献的 SDK
-`net.oomn.jlshell:plugin-api:1.1.0`，构建不需要 GitHub Packages 凭据或额外
+`net.oomn.jlshell:plugin-api:1.2.0`，构建不需要 GitHub Packages 凭据或额外
 Maven `settings.xml`。
 
 需要联调尚未发布的宿主 API 变更时，可先在相邻 JLShell 仓库安装当前 API，再覆盖
@@ -84,3 +88,8 @@ link-program-plugin/target/link-program-plugin-0.1.0-SNAPSHOT-fat.jar
 `link-plugin-distribution/target/plugins/` 汇集同一个产物。Plugin API、JavaFX、
 SLF4J 和 Logback 均由宿主提供，不打入 fat JAR。本工程设置
 `maven.deploy.skip=true`，不会发布到 Maven Central 或其他 Maven 仓库。
+
+正式标签构建要求 `Voghost/JLShellLink` 存在同名标签，并在本仓库配置只读细粒度
+`JLSHELL_LINK_RELEASE_TOKEN`。Release Action 下载同名私有运行时包，验证包摘要后才
+执行 Maven 打包；缺少清单或任一平台二进制时直接失败，禁止发布“需要用户手填路径”的
+残缺插件。

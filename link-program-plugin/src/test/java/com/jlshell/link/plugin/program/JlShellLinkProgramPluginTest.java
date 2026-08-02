@@ -48,8 +48,12 @@ class JlShellLinkProgramPluginTest {
         Capability capability = registry.resolve(LinkPluginContract.RUNTIME_STATUS_CAPABILITY).orElseThrow();
         var result = capability.handler().invoke(JsonNull.INSTANCE, null).join().getAsJsonObject();
         assertThat(result.get("available").getAsBoolean()).isFalse();
-        assertThat(result.get("state").getAsString()).isEqualTo("NOT_CONFIGURED");
-        assertThat(result.get("version").isJsonNull()).isTrue();
+        assertThat(result.get("state").getAsString())
+                .isIn("RUNTIME_MISSING", "CONNECTOR_NOT_READY", "SIGNED_OUT");
+        assertThat(result.has("version")).isTrue();
+        assertThat(result.getAsJsonObject("runtime").get("state").getAsString())
+                .as(result.getAsJsonObject("runtime").toString())
+                .isIn("BUNDLE_MISSING", "READY");
         assertThat(context.sessionIntegration.contribution).isNotNull();
         assertThat(context.sessionIntegration.contribution.displayName()).isEqualTo("JLShell Link");
 
