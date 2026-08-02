@@ -57,7 +57,8 @@ target` 本地绑定。Session 加载账号目录时优先选择当前连接绑�
 
 ## SDK 与本地构建
 
-默认从私有 GitHub Packages 获取 `com.jlshell:plugin-api:0.1.36`。先复制
+默认从私有 GitHub Packages 获取首个稳定 SDK
+`com.jlshell:plugin-api:1.0.0`。先复制
 `settings.example.xml` 到仓库外，并通过环境变量提供 GitHub 用户名和具有
 `read:packages` 权限的令牌。
 
