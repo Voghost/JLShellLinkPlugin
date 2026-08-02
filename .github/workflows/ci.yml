@@ -22,14 +22,29 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Test and package plugins
+      - name: Test and package plugin
         run: mvn -B -ntp verify
-      - name: Verify host API is excluded from fat JARs
+      - name: Verify host API is excluded from the fat JAR
         shell: bash
         run: |
-          for jar_file in link-program-plugin/target/*-fat.jar link-session-plugin/target/*-fat.jar; do
-            if jar tf "$jar_file" | grep -q '^com/jlshell/plugin/api/'; then
-              echo "Host Plugin API leaked into $jar_file" >&2
+          jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          if jar tf "$jar_file" | grep -q '^com/jlshell/plugin/api/'; then
+            echo "Host Plugin API leaked into $jar_file" >&2
+            exit 1
+          fi
+          if jar tf "$jar_file" | grep -q 'META-INF/services/com.jlshell.plugin.api.JlShellPlugin'; then
+            echo "Unexpected Session plugin ServiceLoader entry in $jar_file" >&2
+            exit 1
+          fi
+          for required_entry in \
+            META-INF/jlshell-plugin.json \
+            META-INF/services/com.jlshell.plugin.api.JlShellProgramPlugin; do
+            if ! jar tf "$jar_file" | grep -qx "$required_entry"; then
+              echo "Missing required plugin package entry $required_entry" >&2
               exit 1
             fi
           done
+          if [ "$(find link-plugin-distribution/target/plugins -maxdepth 1 -name '*.jar' | wc -l | tr -d ' ')" != "1" ]; then
+            echo "Distribution must contain exactly one Program plugin JAR" >&2
+            exit 1
+          fi

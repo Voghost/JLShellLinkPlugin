@@ -1,4 +1,4 @@
-package com.jlshell.link.plugin.session;
+package com.jlshell.link.plugin.program.session;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

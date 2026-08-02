@@ -1,4 +1,4 @@
-package com.jlshell.link.plugin.session;
+package com.jlshell.link.plugin.program.session;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -9,12 +9,11 @@ import com.google.gson.JsonObject;
 import com.jlshell.link.plugin.common.LinkPluginContract;
 import com.jlshell.link.plugin.common.ProgramCapabilityClient;
 import com.jlshell.link.plugin.common.RuntimeStatusClient;
-import com.jlshell.plugin.api.JlShellPlugin;
 import com.jlshell.plugin.api.NotificationLevel;
 import com.jlshell.plugin.api.PluginContext;
-import com.jlshell.plugin.api.PluginView;
 import com.jlshell.plugin.api.SshSessionContext;
 import com.jlshell.plugin.api.rpc.CapabilityBus;
+import com.jlshell.plugin.api.session.ProgramSessionController;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
@@ -28,57 +27,21 @@ import javafx.scene.control.TitledPane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 
-public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView {
+final class LinkSessionController implements ProgramSessionController {
 
     private PluginContext context;
     private volatile boolean active;
     private final java.util.Set<String> activeTunnelIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    @Override
-    public String id() {
-        return LinkPluginContract.SESSION_PLUGIN_ID;
-    }
-
-    @Override
-    public String displayName() {
-        return "JLShell Link Session";
-    }
-
-    @Override
-    public String version() {
-        return LinkPluginContract.VERSION;
-    }
-
-    @Override
-    public String author() {
-        return "Voghost";
-    }
-
-    @Override
-    public String minHostVersionInclusive() {
-        return LinkPluginContract.MIN_HOST_VERSION;
-    }
-
-    @Override
-    public String description() {
-        return "Displays the global JLShell Link runtime state in an SSH session.";
-    }
-
-    @Override
-    public boolean requiresSshSession() {
-        return true;
-    }
-
-    @Override
-    public void activate(PluginContext context) {
+    LinkSessionController(PluginContext context) {
         this.context = context;
         active = true;
-        context.openTab(displayName(), createView(context));
-        context.info("JLShell Link session plugin activated");
+        context.openTab("JLShell Link", createView(context));
+        context.info("JLShell Link session contribution activated");
     }
 
     @Override
-    public void deactivate() {
+    public void close() {
         if (context == null) {
             return;
         }
@@ -87,17 +50,10 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
             closeTunnel(context.capabilityBus(), tunnelId);
         }
         activeTunnelIds.clear();
-        context.closeTab();
         context = null;
     }
 
-    @Override
-    public PluginView view() {
-        return this;
-    }
-
-    @Override
-    public Node createView(PluginContext context) {
+    Node createView(PluginContext context) {
         Label title = new Label("JLShell Link Runtime");
         TextArea runtimeResult = output("正在读取程序级能力…", 4);
         Label projectIntent = new Label("正在读取项目的 Agent 设置…");
@@ -128,11 +84,11 @@ public final class JlShellLinkSessionPlugin implements JlShellPlugin, PluginView
         return scroll;
     }
 
-    CompletableFuture<JsonElement> loadRuntimeStatus(CapabilityBus capabilityBus) {
+    static CompletableFuture<JsonElement> loadRuntimeStatus(CapabilityBus capabilityBus) {
         return RuntimeStatusClient.query(capabilityBus);
     }
 
-    CompletableFuture<JsonElement> loadProjectIntent(CapabilityBus capabilityBus, String sessionId) {
+    static CompletableFuture<JsonElement> loadProjectIntent(CapabilityBus capabilityBus, String sessionId) {
         JsonObject args = new JsonObject();
         args.addProperty("sessionId", sessionId);
         return ProgramCapabilityClient.invoke(capabilityBus, null,

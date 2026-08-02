@@ -18,6 +18,9 @@ import com.jlshell.plugin.api.rpc.Capability;
 import com.jlshell.plugin.api.rpc.CapabilityBus;
 import com.jlshell.plugin.api.rpc.CapabilityRegistry;
 import com.jlshell.plugin.api.rpc.CapabilitySpec;
+import com.jlshell.plugin.api.lifecycle.Registration;
+import com.jlshell.plugin.api.session.ProgramSessionContribution;
+import com.jlshell.plugin.api.session.ProgramSessionIntegration;
 import com.jlshell.plugin.api.storage.PluginStorage;
 import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.ReadOnlyStringProperty;
@@ -37,15 +40,18 @@ class JlShellLinkProgramPluginTest {
     @Test
     void activationRegistersStatusAndDeactivationRemovesIt() throws Exception {
         TestRegistry registry = new TestRegistry();
+        TestProgramContext context = new TestProgramContext(registry);
         JlShellLinkProgramPlugin plugin = new JlShellLinkProgramPlugin();
 
-        plugin.activate(new TestProgramContext(registry));
+        plugin.activate(context);
 
         Capability capability = registry.resolve(LinkPluginContract.RUNTIME_STATUS_CAPABILITY).orElseThrow();
         var result = capability.handler().invoke(JsonNull.INSTANCE, null).join().getAsJsonObject();
         assertThat(result.get("available").getAsBoolean()).isFalse();
         assertThat(result.get("state").getAsString()).isEqualTo("NOT_CONFIGURED");
         assertThat(result.get("version").isJsonNull()).isTrue();
+        assertThat(context.sessionIntegration.contribution).isNotNull();
+        assertThat(context.sessionIntegration.contribution.displayName()).isEqualTo("JLShell Link");
 
         plugin.deactivate();
         assertThat(registry.resolve(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)).isEmpty();
@@ -71,7 +77,15 @@ class JlShellLinkProgramPluginTest {
         }
     }
 
-    private record TestProgramContext(TestRegistry capabilityRegistry) implements ProgramPluginContext {
+    private static final class TestProgramContext implements ProgramPluginContext {
+        private final TestRegistry capabilityRegistry;
+        private final TestSessionIntegration sessionIntegration = new TestSessionIntegration();
+
+        private TestProgramContext(TestRegistry capabilityRegistry) {
+            this.capabilityRegistry = capabilityRegistry;
+        }
+
+        @Override public TestRegistry capabilityRegistry() { return capabilityRegistry; }
         @Override public String themeName() { return "dark"; }
         @Override public ReadOnlyStringProperty themeNameProperty() {
             return new SimpleStringProperty("dark");
@@ -82,8 +96,17 @@ class JlShellLinkProgramPluginTest {
         }
         @Override public CapabilityBus capabilityBus() { return null; }
         @Override public PluginStorage storage() { return null; }
+        @Override public ProgramSessionIntegration sessionIntegration() { return sessionIntegration; }
         @Override public String resolveI18n(String key, String fallback) { return fallback; }
         @Override public void showNotification(String message, NotificationLevel level) { }
     }
-}
 
+    private static final class TestSessionIntegration implements ProgramSessionIntegration {
+        private ProgramSessionContribution contribution;
+        @Override public boolean available() { return true; }
+        @Override public Registration register(ProgramSessionContribution contribution) {
+            this.contribution = contribution;
+            return () -> this.contribution = null;
+        }
+    }
+}
