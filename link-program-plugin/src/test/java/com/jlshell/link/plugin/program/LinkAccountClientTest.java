@@ -43,6 +43,16 @@ class LinkAccountClientTest {
         }
     }
 
+    @Test
+    void usesProductionWebsiteWithoutUserConfiguration() {
+        try (ConnectorProcessManager connector = new ConnectorProcessManager(
+                new ConnectorConfiguration(null, temporaryDirectory.resolve("identity.key"), null));
+             LinkAccountClient client = new LinkAccountClient(new MemoryStorage(), new MemorySecrets(), connector)) {
+            assertThat(client.configuredBaseUrl()).isEqualTo(LinkAccountClient.DEFAULT_BASE_URL);
+            assertThat(client.status().get("baseUrl").getAsString()).isEqualTo(LinkAccountClient.DEFAULT_BASE_URL);
+        }
+    }
+
     private static class MemoryStorage implements PluginStorage {
         final Map<String, String> values = new LinkedHashMap<>();
         @Override public String get(String key) { return values.get(key); }
