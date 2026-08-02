@@ -6,4 +6,5 @@ target/
 .DS_Store
 settings.xml
 *.log
-
+.runtime-bundle/
+runtime-download/

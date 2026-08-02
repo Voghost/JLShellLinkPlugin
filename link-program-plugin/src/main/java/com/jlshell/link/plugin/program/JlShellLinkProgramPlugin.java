@@ -26,6 +26,8 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
@@ -34,6 +36,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private ProgramPluginContext context;
     private ConnectorProcessManager connectorManager;
     private LinkAccountClient accountClient;
+    private BundledRuntimeManager runtimeManager;
     private final List<Registration> registrations = new ArrayList<>();
     private final Map<String, LinkBindingStore.SessionReference> sessionReferences = new ConcurrentHashMap<>();
     private LinkBindingStore bindingStore;
@@ -71,13 +74,16 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     @Override
     public void activate(ProgramPluginContext context) {
         this.context = context;
-        connectorManager = new ConnectorProcessManager(ConnectorConfiguration.load(context.storage()));
+        runtimeManager = new BundledRuntimeManager();
+        BundledRuntimeManager.PreparedRuntime bundled = runtimeManager.prepare();
+        connectorManager = new ConnectorProcessManager(
+                ConnectorConfiguration.load(context.storage(), bundled));
         accountClient = new LinkAccountClient(context.storage(), context.secureStorage(), connectorManager);
         bindingStore = new LinkBindingStore(context.storage());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(connectorManager.status()))
+                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(runtimeStatus()))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_OPEN_CAPABILITY)
                 .description("Start a loopback-only Connector tunnel from a signed Link ticket.")
@@ -136,7 +142,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
                         saveBinding(args.getAsJsonObject()))).build());
         if (context.projectIntegration().available()) {
-            registrations.add(context.projectIntegration().register(new LinkProjectContribution(context.storage())));
+            registrations.add(context.projectIntegration().register(new LinkProjectContribution(
+                    context.storage(), accountClient, connectorManager, runtimeManager)));
         }
         if (context.sessionIntegration().available()) {
             registrations.add(context.sessionIntegration().register(new LinkSessionContribution()));
@@ -199,25 +206,53 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         bindingStore = null;
         connectorManager.close();
         connectorManager = null;
+        runtimeManager = null;
         context.info("JLShell Link program plugin deactivated");
         context = null;
     }
 
     @Override
     public Node settingsView(ProgramPluginContext context) {
-        ConnectorConfiguration configuration = ConnectorConfiguration.load(context.storage()).normalized();
-        Label title = new Label("JLShell Link Runtime");
+        ConnectorConfiguration configuration = ConnectorConfiguration.load(
+                context.storage(), runtimeManager.prepared()).normalized();
+        Label title = new Label("JLShell Link");
+        Label overall = new Label();
+        overall.setWrapText(true);
+        Label accountState = new Label();
+        Label runtimeState = new Label();
+        Label connectorState = new Label();
+
+        Button login = new Button("登录 JLShell 账号");
+        Button logout = new Button("退出账号");
+        Button refresh = new Button("刷新状态");
+        Button repair = new Button("重新准备内置运行时");
+
         TextField connector = new TextField(text(configuration.connectorBinary()));
-        connector.setPromptText("jlshell-connector 可执行文件路径");
+        connector.setPromptText("默认自动使用插件内置 Connector");
         TextField identity = new TextField(text(configuration.identityFile()));
         identity.setPromptText("Connector 身份文件路径");
         TextField agents = new TextField(text(configuration.agentBundleDirectory()));
-        agents.setPromptText("Agent 三平台二进制目录");
+        agents.setPromptText("默认自动使用插件内置三平台 Agent");
         TextField website = new TextField(accountClient.configuredBaseUrl());
-        website.setPromptText("https://jlshell.example.com");
-        Label status = new Label(statusText());
-        status.setWrapText(true);
-        Button save = new Button("保存并检测 Connector");
+        website.setPromptText(LinkAccountClient.DEFAULT_BASE_URL);
+
+        Runnable update = () -> {
+            JsonObject runtime = runtimeManager.status();
+            JsonObject connectorStatus = connectorManager.status();
+            JsonObject account = accountClient.status();
+            overall.setText(readinessText(runtime, connectorStatus, account));
+            runtimeState.setText("内置运行时：" + runtime.get("state").getAsString()
+                    + " · " + runtime.get("message").getAsString());
+            connectorState.setText("Connector：" + connectorStatus.get("state").getAsString()
+                    + " · 活跃隧道 " + connectorStatus.get("activeTunnels").getAsInt());
+            accountState.setText("账号：" + account.get("state").getAsString()
+                    + " · " + account.get("baseUrl").getAsString());
+            boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
+            login.setDisable(authenticated || !connectorStatus.get("available").getAsBoolean());
+            logout.setDisable(!authenticated);
+        };
+
+        Button save = new Button("保存高级配置");
         save.setOnAction(event -> {
             try {
                 ConnectorConfiguration updated = new ConnectorConfiguration(
@@ -225,31 +260,49 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 accountClient.configureBaseUrl(website.getText());
                 updated.save(context.storage());
                 connectorManager.configure(updated);
-                status.setText("配置已保存，正在检测 Connector 身份…");
+                update.run();
                 context.showNotification("JLShell Link 配置已保存", NotificationLevel.INFO);
             } catch (RuntimeException error) {
-                status.setText("配置无效：" + error.getMessage());
+                overall.setText("配置无效：" + error.getMessage());
                 context.showNotification("JLShell Link 配置无效", NotificationLevel.ERROR);
             }
         });
-        Button refresh = new Button("刷新状态");
-        refresh.setOnAction(event -> status.setText(statusText()));
-        Button login = new Button("使用浏览器登录");
+        repair.setOnAction(event -> {
+            BundledRuntimeManager.PreparedRuntime prepared = runtimeManager.prepare();
+            ConnectorConfiguration.useBundledDefaults(context.storage());
+            ConnectorConfiguration defaults = ConnectorConfiguration.load(context.storage(), prepared).normalized();
+            connector.setText(text(defaults.connectorBinary()));
+            agents.setText(text(defaults.agentBundleDirectory()));
+            connectorManager.configure(defaults);
+            update.run();
+        });
+        refresh.setOnAction(event -> update.run());
         login.setOnAction(event -> accountClient.startLogin().whenComplete((value, error) ->
-                javafx.application.Platform.runLater(() -> status.setText(error == null
-                        ? "登录已发起：" + value.getAsJsonObject().get("authorizationUrl").getAsString()
-                        : "登录失败：" + error.getMessage()))));
-        Button logout = new Button("退出账号");
+                javafx.application.Platform.runLater(() -> {
+                    update.run();
+                    if (error != null) overall.setText("登录失败：" + error.getMessage());
+                    else overall.setText("浏览器登录已打开，完成后点击“刷新状态”。");
+                })));
         logout.setOnAction(event -> accountClient.logout().whenComplete((value, error) ->
-                javafx.application.Platform.runLater(() -> status.setText(statusText()))));
-        Label note = new Label("票据只写入 0600 临时文件，Connector 仅绑定回环地址；"
-                + "Agent 目录中的文件名必须使用发布约定名称。");
+                javafx.application.Platform.runLater(update)));
+
+        VBox advanced = new VBox(8, new Label("服务地址"), website,
+                new Label("Connector 覆盖路径"), connector,
+                new Label("身份文件"), identity,
+                new Label("Agent 发布目录覆盖路径"), agents, save);
+        advanced.setPadding(new Insets(8));
+        TitledPane advancedPane = new TitledPane("高级配置（一般无需修改）", advanced);
+        advancedPane.setExpanded(false);
+
+        Label note = new Label("默认配置会自动解包并校验 Connector 与三平台 Agent。登录态、"
+                + "Connector 和所有 SSH Session 由当前 Program 插件统一管理；进入 SSH 会话后按向导安装 Agent。");
         note.setWrapText(true);
-        VBox root = new VBox(8, title, new Label("Website"), website, login, logout,
-                new Label("Connector"), connector,
-                new Label("身份文件"), identity, new Label("Agent 发布目录"), agents,
-                save, refresh, status, note);
+        HBox accountActions = new HBox(8, login, logout, refresh);
+        HBox runtimeActions = new HBox(8, repair);
+        VBox root = new VBox(10, title, overall, accountState, runtimeState, connectorState,
+                accountActions, runtimeActions, note, advancedPane);
         root.setPadding(new Insets(12));
+        update.run();
         return root;
     }
 
@@ -313,12 +366,41 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
     }
 
-    private String statusText() {
-        JsonObject status = connectorManager.status();
-        JsonObject accountStatus = accountClient.status();
-        return "账号：" + accountStatus.get("state").getAsString()
-                + "；Connector：" + status.get("state").getAsString()
-                + "，活跃隧道：" + status.get("activeTunnels").getAsInt();
+    JsonObject runtimeStatus() {
+        JsonObject runtime = runtimeManager.status();
+        JsonObject connector = connectorManager.status();
+        JsonObject account = accountClient.status();
+        boolean runtimeReady = runtime.get("available").getAsBoolean();
+        boolean connectorReady = connector.get("available").getAsBoolean();
+        boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
+        String state = !runtimeReady ? "RUNTIME_MISSING"
+                : !connectorReady ? "CONNECTOR_NOT_READY"
+                : !authenticated ? "SIGNED_OUT" : "READY";
+        String nextAction = !runtimeReady ? "REINSTALL_OR_REPAIR_PLUGIN"
+                : !connectorReady ? "REPAIR_CONNECTOR"
+                : !authenticated ? "LOGIN" : "OPEN_SESSION";
+        JsonObject result = new JsonObject();
+        result.addProperty("available", runtimeReady && connectorReady && authenticated);
+        result.addProperty("state", state);
+        result.addProperty("nextAction", nextAction);
+        if (connector.has("version")) result.add("version", connector.get("version").deepCopy());
+        result.add("runtime", runtime.deepCopy());
+        result.add("connector", connector.deepCopy());
+        result.add("account", account.deepCopy());
+        return result;
+    }
+
+    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account) {
+        if (!runtime.get("available").getAsBoolean()) {
+            return "需要修复：插件未包含完整运行时。请重新安装正式插件包，或点击重新准备运行时。";
+        }
+        if (!connector.get("available").getAsBoolean()) {
+            return "需要修复：Connector 尚未就绪。点击重新准备内置运行时后刷新状态。";
+        }
+        if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
+            return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
+        }
+        return "JLShell Link 已就绪。打开项目中的 SSH 会话即可检测并安装 Agent。";
     }
 
     private static String requiredString(JsonObject object, String name) {

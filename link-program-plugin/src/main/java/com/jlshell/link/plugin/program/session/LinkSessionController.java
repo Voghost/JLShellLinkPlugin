@@ -3,7 +3,6 @@ package com.jlshell.link.plugin.program.session;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.jlshell.link.plugin.common.LinkPluginContract;
@@ -17,7 +16,9 @@ import com.jlshell.plugin.api.session.ProgramSessionController;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
+import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
@@ -54,14 +55,15 @@ final class LinkSessionController implements ProgramSessionController {
     }
 
     Node createView(PluginContext context) {
-        Label title = new Label("JLShell Link Runtime");
-        TextArea runtimeResult = output("正在读取程序级能力…", 4);
+        Label title = new Label("JLShell Link · 当前 SSH 会话");
+        Label runtimeResult = new Label("正在检查账号、Connector 和内置运行时…");
+        runtimeResult.setWrapText(true);
         Label projectIntent = new Label("正在读取项目的 Agent 设置…");
         projectIntent.setWrapText(true);
 
         loadRuntimeStatus(context.capabilityBus()).whenComplete((status, error) ->
                 Platform.runLater(() -> runtimeResult.setText(error == null
-                        ? new GsonBuilder().setPrettyPrinting().create().toJson(status)
+                        ? readinessText(status.getAsJsonObject())
                         : "无法读取程序级能力：" + rootMessage(error))));
         loadProjectIntent(context.capabilityBus(), sessionId(context)).whenComplete((intent, error) ->
                 Platform.runLater(() -> projectIntent.setText(error == null
@@ -71,10 +73,10 @@ final class LinkSessionController implements ProgramSessionController {
                         : "无法读取项目 Agent 设置：" + rootMessage(error))));
 
         VBox deployment = deploymentView(context);
-        TitledPane tunnel = new TitledPane("打开 SSH/TCP 隧道（开发联调）", tunnelView(context));
+        TitledPane tunnel = new TitledPane("高级：手工查看目录、取票和隧道联调", tunnelView(context));
         tunnel.setExpanded(false);
-        Label note = new Label("当前支持从本地已校验发布目录部署 Linux x64、macOS ARM64 和 "
-                + "Windows x64 Agent，并可在桌面 PKCE 登录后从账号目录自动签发短期票据。");
+        Label note = new Label("所有登录、票据和 Connector 均复用 Program 插件全局状态。"
+                + "Agent 上传前后都会校验 SHA-256，凭据仅写入受保护的远端临时文件。 ");
         note.setWrapText(true);
 
         VBox root = new VBox(10, title, runtimeResult, projectIntent, deployment, tunnel, note);
@@ -96,28 +98,87 @@ final class LinkSessionController implements ProgramSessionController {
     }
 
     private VBox deploymentView(PluginContext context) {
-        Label heading = new Label("Agent 自动部署");
-        TextArea result = output("尚未检测远端平台。", 4);
-        Button deploy = new Button("部署、注册并启动 Agent");
+        Label heading = new Label("Agent 安装向导");
+        Label steps = new Label("1. 检测服务器平台  2. 确认安装位置  3. 上传并校验 Agent  "
+                + "4. 注册账号并启动系统服务  5. 绑定当前连接");
+        steps.setWrapText(true);
+        TextArea result = output("点击“检测当前服务器”开始。不会在确认前写入远端文件。", 6);
+        Button detect = new Button("检测当前服务器");
+        Button login = new Button("登录账号（复用 Program 登录态）");
+        Button deploy = new Button("安装、注册并绑定当前连接");
+        deploy.setDisable(true);
         SshSessionContext ssh = context.sshSession().orElse(null);
-        deploy.setDisable(ssh == null);
+        detect.setDisable(ssh == null);
+        login.setDisable(ssh == null);
+        AtomicReference<RemotePlatform> detected = new AtomicReference<>();
+
+        detect.setOnAction(event -> {
+            detect.setDisable(true);
+            result.setText("正在通过当前 SSH 会话读取操作系统、CPU 架构和用户目录…");
+            AgentDeploymentService service = new AgentDeploymentService(ssh, context.capabilityBus());
+            service.detectPlatform().whenComplete((platform, error) -> Platform.runLater(() -> {
+                detect.setDisable(false);
+                if (error != null) {
+                    detected.set(null);
+                    deploy.setDisable(true);
+                    result.setText("检测失败：" + rootMessage(error)
+                            + "\n请确认当前 SSH 用户可执行 uname 或 PowerShell。 ");
+                    return;
+                }
+                detected.set(platform);
+                deploy.setDisable(false);
+                result.setText("检测完成\n平台：" + platform.platform() + "/" + platform.architecture()
+                        + "\n安装路径：" + platform.remoteBinary()
+                        + "\n默认授权目标：127.0.0.1:22"
+                        + "\n下一步：点击安装按钮并确认。 ");
+            }));
+        });
+        login.setOnAction(event -> {
+            login.setDisable(true);
+            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                    LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY, new JsonObject())
+                    .whenComplete((value, error) -> Platform.runLater(() -> {
+                        login.setDisable(false);
+                        result.setText(error == null
+                                ? "已打开 Program 插件的浏览器登录流程。完成登录后即可继续安装。"
+                                : "登录失败：" + rootMessage(error));
+                    }));
+        });
         deploy.setOnAction(event -> {
+            RemotePlatform platform = detected.get();
+            if (platform == null) {
+                result.setText("请先检测当前服务器。 ");
+                return;
+            }
+            Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
+                    "将在当前 SSH 服务器执行以下操作：\n"
+                            + "• 上传并校验 " + platform.platform() + "/" + platform.architecture() + " Agent\n"
+                            + "• 安装到 " + platform.remoteBinary() + "\n"
+                            + "• 创建当前用户的后台服务并连接 JLShell Link\n"
+                            + "• 仅授权 127.0.0.1:22 并绑定当前连接\n\n是否继续？",
+                    ButtonType.OK, ButtonType.CANCEL);
+            confirmation.setHeaderText("确认安装 JLShell Link Agent");
+            if (confirmation.showAndWait().filter(ButtonType.OK::equals).isEmpty()) return;
             deploy.setDisable(true);
-            result.setText("正在检测远端平台、校验本地发布物并上传…");
+            detect.setDisable(true);
+            result.setText("正在上传、校验、注册并启动 Agent，请勿关闭当前 SSH 会话…");
             new AgentDeploymentService(ssh, context.capabilityBus()).deployAndRegister(ssh.displayName())
                     .whenComplete((deployed, error) -> {
                         if (error != null) {
                             Platform.runLater(() -> {
+                                detect.setDisable(false);
                                 deploy.setDisable(false);
-                            result.setText("部署失败：" + rootMessage(error));
-                            context.showNotification("JLShell Link Agent 部署失败", NotificationLevel.ERROR);
+                                result.setText("安装失败：" + rootMessage(error)
+                                        + "\n可重新检测后重试；已上传的临时文件会自动清理。 ");
+                                context.showNotification("JLShell Link Agent 安装失败", NotificationLevel.ERROR);
                             });
                             return;
                         }
                         saveBinding(context.capabilityBus(), sessionId(context), deployed)
                                 .whenComplete((binding, bindingError) -> Platform.runLater(() -> {
+                            detect.setDisable(false);
                             deploy.setDisable(false);
-                            result.setText("部署并注册完成\n平台：" + deployed.platform() + "/" + deployed.architecture()
+                            result.setText("Agent 已安装并启动\n平台：" + deployed.platform() + "/" + deployed.architecture()
                                     + "\n路径：" + deployed.remotePath() + "\nAgent PeerId："
                                     + deployed.agentPeerId() + "\n授权目标：" + deployed.targetIp() + ":"
                                     + deployed.targetPort()
@@ -128,7 +189,7 @@ final class LinkSessionController implements ProgramSessionController {
                         }));
                     });
         });
-        return new VBox(6, heading, deploy, result);
+        return new VBox(7, heading, steps, new VBox(6, detect, login, deploy), result);
     }
 
     private Node tunnelView(PluginContext context) {
@@ -396,6 +457,17 @@ final class LinkSessionController implements ProgramSessionController {
 
     private boolean isActive(PluginContext expected) {
         return active && context == expected;
+    }
+
+    private static String readinessText(JsonObject status) {
+        String state = status.has("state") ? status.get("state").getAsString() : "UNKNOWN";
+        return switch (state) {
+            case "READY" -> "状态：已就绪。账号、Connector 和内置运行时可用，可安装或连接 Agent。";
+            case "SIGNED_OUT" -> "状态：运行时已就绪，但尚未登录。可在下方复用 Program 登录流程。";
+            case "CONNECTOR_NOT_READY" -> "状态：Connector 未就绪。请在插件设置或项目管理中修复内置运行时。";
+            case "RUNTIME_MISSING" -> "状态：插件缺少完整原生运行时，请重新安装正式插件包。";
+            default -> "状态：" + state + "。请刷新或查看项目管理中的修复建议。";
+        };
     }
 
     private record CatalogTarget(String agentId, String agentName, String agentPeer,

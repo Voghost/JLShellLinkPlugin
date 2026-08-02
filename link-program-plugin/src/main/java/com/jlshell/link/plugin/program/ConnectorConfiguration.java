@@ -11,15 +11,22 @@ record ConnectorConfiguration(Path connectorBinary, Path identityFile, Path agen
     private static final String AGENT_BUNDLE_KEY = "agent.bundle.directory";
 
     static ConnectorConfiguration load(PluginStorage storage) {
+        return load(storage, null);
+    }
+
+    static ConnectorConfiguration load(PluginStorage storage,
+                                       BundledRuntimeManager.PreparedRuntime bundled) {
         Path defaultIdentity = Path.of(System.getProperty("user.home"), ".jlshell", "link",
                 "connector-identity.key").toAbsolutePath().normalize();
+        Path defaultConnector = bundled == null ? null : bundled.connectorBinary();
+        Path defaultAgents = bundled == null ? null : bundled.agentBundleDirectory();
         if (storage == null) {
-            return new ConnectorConfiguration(null, defaultIdentity, null);
+            return new ConnectorConfiguration(defaultConnector, defaultIdentity, defaultAgents);
         }
         return new ConnectorConfiguration(
-                path(storage.get(CONNECTOR_BINARY_KEY)),
+                path(storage.get(CONNECTOR_BINARY_KEY, text(defaultConnector))),
                 path(storage.get(IDENTITY_FILE_KEY, defaultIdentity.toString())),
-                path(storage.get(AGENT_BUNDLE_KEY)));
+                path(storage.get(AGENT_BUNDLE_KEY, text(defaultAgents))));
     }
 
     void save(PluginStorage storage) {
@@ -36,8 +43,18 @@ record ConnectorConfiguration(Path connectorBinary, Path identityFile, Path agen
                 normalize(agentBundleDirectory));
     }
 
+    static void useBundledDefaults(PluginStorage storage) {
+        if (storage == null) return;
+        storage.remove(CONNECTOR_BINARY_KEY);
+        storage.remove(AGENT_BUNDLE_KEY);
+    }
+
     private static Path path(String value) {
         return value == null || value.isBlank() ? null : Path.of(value.trim());
+    }
+
+    private static String text(Path value) {
+        return value == null ? null : value.toString();
     }
 
     private static Path normalize(Path value) {
