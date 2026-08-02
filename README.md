@@ -57,13 +57,12 @@ target` 本地绑定。Session 加载账号目录时优先选择当前连接绑�
 
 ## SDK 与本地构建
 
-默认从私有 GitHub Packages 获取首个稳定 SDK
-`com.jlshell:plugin-api:1.0.0`。先复制
-`settings.example.xml` 到仓库外，并通过环境变量提供 GitHub 用户名和具有
-`read:packages` 权限的令牌。
+默认从 Maven Central 获取首个稳定 SDK
+`net.oomn.jlshell:plugin-api:1.0.0`，构建不需要 GitHub Packages 凭据或额外
+Maven `settings.xml`。
 
-SDK 尚未发布时，可先在相邻 JLShell 仓库安装当前 API，再覆盖依赖版本。项目创建与
-Host 事件需要包含阶段 1 扩展的最新本地 SDK：
+需要联调尚未发布的宿主 API 变更时，可先在相邻 JLShell 仓库安装当前 API，再覆盖
+依赖版本。项目创建与 Host 事件需要包含阶段 1 扩展的最新本地 SDK：
 
 ```bash
 cd ../JLShell
