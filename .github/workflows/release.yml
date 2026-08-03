@@ -58,8 +58,22 @@ jobs:
         run: |
           mkdir -p dist
           cp link-program-plugin/target/*-fat.jar dist/jlshell-link-plugin.jar
-          sha256sum dist/*.jar > dist/SHA256SUMS
+          cd dist
+          sha256sum *.jar > SHA256SUMS
       - name: Create private GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "Single JLShell Link Program plugin with managed SSH session integration."
+        shell: bash
+        run: |
+          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No plugin release files were produced" >&2
+            exit 1
+          fi
+          notes="Single JLShell Link Program plugin with managed SSH session integration."
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
