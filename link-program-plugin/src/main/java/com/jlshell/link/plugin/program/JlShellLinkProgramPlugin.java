@@ -88,7 +88,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_OPEN_CAPABILITY)
                 .description("Start a loopback-only Connector tunnel from a signed Link ticket.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> connectorManager.open(args))
+                .handler((args, capabilityContext) -> accountClient.authorizeSession("link.tcp-tunnel")
+                        .thenCompose(ignored -> connectorManager.open(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_CLOSE_CAPABILITY)
                 .description("Stop a Connector tunnel owned by this plugin process.")
@@ -104,7 +105,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)
                 .description("Resolve a locally configured Agent binary for a supported remote platform.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> agentInstallSpec(args))
+                .handler((args, capabilityContext) -> accountClient.authorizeSession("link.agent-deploy")
+                        .thenCompose(ignored -> agentInstallSpec(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_STATUS_CAPABILITY)
                 .description("Return the encrypted Program-level Link account session state.")
@@ -117,6 +119,16 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY)
                 .description("Revoke and erase the encrypted Link account session.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.logout()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY)
+                .description("Return the cached Link plan, trial and plugin policy state.")
+                .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
+                        accountClient.subscriptionStatus())).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY)
+                .description("Refresh Link entitlements and Program/Session plugin policies.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.refreshSubscription()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TRIAL_CLAIM_CAPABILITY)
+                .description("Claim the one-time 14-day Pro trial for the verified desktop device.")
+                .requiresSession(false).handler((args, capabilityContext) -> accountClient.claimTrial()).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
                 .description("List owned Agents, targets and available Relays without exposing the account token.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
@@ -192,6 +204,9 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.ACCOUNT_STATUS_CAPABILITY,
                 LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY,
                 LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY,
+                LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY,
+                LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY,
+                LinkPluginContract.TRIAL_CLAIM_CAPABILITY,
                 LinkPluginContract.LINK_CATALOG_CAPABILITY,
                 LinkPluginContract.TICKET_ISSUE_CAPABILITY,
                 LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
@@ -219,12 +234,15 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Label overall = new Label();
         overall.setWrapText(true);
         Label accountState = new Label();
+        Label subscriptionState = new Label();
+        subscriptionState.setWrapText(true);
         Label runtimeState = new Label();
         Label connectorState = new Label();
 
         Button login = new Button("登录 JLShell 账号");
         Button logout = new Button("退出账号");
         Button refresh = new Button("刷新状态");
+        Button trial = new Button("领取 14 天 Pro 试用");
         Button repair = new Button("重新准备内置运行时");
 
         TextField connector = new TextField(text(configuration.connectorBinary()));
@@ -247,9 +265,14 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                     + " · 活跃隧道 " + connectorStatus.get("activeTunnels").getAsInt());
             accountState.setText("账号：" + account.get("state").getAsString()
                     + " · " + account.get("baseUrl").getAsString());
+            JsonObject subscription = account.getAsJsonObject("subscription");
+            subscriptionState.setText(subscriptionText(subscription));
             boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
             login.setDisable(authenticated || !connectorStatus.get("available").getAsBoolean());
             logout.setDisable(!authenticated);
+            refresh.setDisable(!authenticated);
+            trial.setDisable(!authenticated || !"TRIAL_AVAILABLE".equals(
+                    subscription.get("state").getAsString()));
         };
 
         Button save = new Button("保存高级配置");
@@ -276,7 +299,15 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             connectorManager.configure(defaults);
             update.run();
         });
-        refresh.setOnAction(event -> update.run());
+        refresh.setOnAction(event -> {
+            refresh.setDisable(true);
+            accountClient.refreshSubscription().whenComplete((value, error) ->
+                    javafx.application.Platform.runLater(() -> {
+                        refresh.setDisable(false);
+                        update.run();
+                        if (error != null) overall.setText("套餐状态刷新失败：" + rootMessage(error));
+                    }));
+        });
         login.setOnAction(event -> accountClient.startLogin().whenComplete((value, error) ->
                 javafx.application.Platform.runLater(() -> {
                     update.run();
@@ -285,6 +316,18 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 })));
         logout.setOnAction(event -> accountClient.logout().whenComplete((value, error) ->
                 javafx.application.Platform.runLater(update)));
+        trial.setOnAction(event -> {
+            trial.setDisable(true);
+            accountClient.claimTrial().whenComplete((value, error) ->
+                    javafx.application.Platform.runLater(() -> {
+                        update.run();
+                        if (error == null) {
+                            overall.setText("14 天 Pro 试用已开通，Link 能力现已可用。");
+                        } else {
+                            overall.setText("试用领取失败：" + rootMessage(error));
+                        }
+                    }));
+        });
 
         VBox advanced = new VBox(8, new Label("服务地址"), website,
                 new Label("Connector 覆盖路径"), connector,
@@ -297,9 +340,9 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Label note = new Label("默认配置会自动解包并校验 Connector 与三平台 Agent。登录态、"
                 + "Connector 和所有 SSH Session 由当前 Program 插件统一管理；进入 SSH 会话后按向导安装 Agent。");
         note.setWrapText(true);
-        HBox accountActions = new HBox(8, login, logout, refresh);
+        HBox accountActions = new HBox(8, login, logout, trial, refresh);
         HBox runtimeActions = new HBox(8, repair);
-        VBox root = new VBox(10, title, overall, accountState, runtimeState, connectorState,
+        VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState, connectorState,
                 accountActions, runtimeActions, note, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
@@ -373,20 +416,27 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         boolean runtimeReady = runtime.get("available").getAsBoolean();
         boolean connectorReady = connector.get("available").getAsBoolean();
         boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
+        JsonObject subscription = account.getAsJsonObject("subscription");
         String state = !runtimeReady ? "RUNTIME_MISSING"
                 : !connectorReady ? "CONNECTOR_NOT_READY"
-                : !authenticated ? "SIGNED_OUT" : "READY";
+                : !authenticated ? "SIGNED_OUT" : subscription.get("state").getAsString();
         String nextAction = !runtimeReady ? "REINSTALL_OR_REPAIR_PLUGIN"
                 : !connectorReady ? "REPAIR_CONNECTOR"
-                : !authenticated ? "LOGIN" : "OPEN_SESSION";
+                : !authenticated ? "LOGIN" : switch (state) {
+                    case "READY" -> "OPEN_SESSION";
+                    case "TRIAL_AVAILABLE" -> "START_TRIAL_OR_UPGRADE";
+                    case "CHECKING" -> "REFRESH_SUBSCRIPTION";
+                    default -> "CONTACT_ADMIN_OR_UPGRADE";
+                };
         JsonObject result = new JsonObject();
-        result.addProperty("available", runtimeReady && connectorReady && authenticated);
+        result.addProperty("available", runtimeReady && connectorReady && authenticated && "READY".equals(state));
         result.addProperty("state", state);
         result.addProperty("nextAction", nextAction);
         if (connector.has("version")) result.add("version", connector.get("version").deepCopy());
         result.add("runtime", runtime.deepCopy());
         result.add("connector", connector.deepCopy());
         result.add("account", account.deepCopy());
+        result.add("subscription", subscription.deepCopy());
         return result;
     }
 
@@ -400,7 +450,36 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
             return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
         }
+        String subscription = account.getAsJsonObject("subscription").get("state").getAsString();
+        if (!"READY".equals(subscription)) {
+            return switch (subscription) {
+                case "TRIAL_AVAILABLE" -> "当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";
+                case "UPGRADE_REQUIRED" -> "当前套餐不包含 JLShell Link，请升级 Plus 或 Pro。";
+                case "DISABLED_BY_ADMIN" -> "JLShell Link 已被管理员停用，请联系管理员。";
+                case "VERSION_NOT_SUPPORTED" -> "当前插件版本不在管理员允许范围内，请升级或回退插件。";
+                case "CHECK_FAILED" -> "无法检查套餐状态，请确认网站服务和网络连接。";
+                default -> "正在检查套餐与插件策略，请稍后刷新状态。";
+            };
+        }
         return "JLShell Link 已就绪。打开项目中的 SSH 会话即可检测并安装 Agent。";
+    }
+
+    private static String subscriptionText(JsonObject subscription) {
+        String state = subscription.get("state").getAsString();
+        if (!subscription.has("entitlement") || subscription.get("entitlement").isJsonNull()) {
+            return "套餐：" + state;
+        }
+        JsonObject entitlement = subscription.getAsJsonObject("entitlement");
+        String plan = entitlement.get("plan").getAsString();
+        String suffix = entitlement.has("effectiveUntil") && !entitlement.get("effectiveUntil").isJsonNull()
+                ? " · 有效至 " + entitlement.get("effectiveUntil").getAsString() : "";
+        return "套餐：" + plan + " · 权限状态 " + state + suffix;
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
     private static String requiredString(JsonObject object, String name) {

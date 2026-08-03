@@ -26,6 +26,7 @@ import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 final class LinkSessionController implements ProgramSessionController {
@@ -60,11 +61,55 @@ final class LinkSessionController implements ProgramSessionController {
         runtimeResult.setWrapText(true);
         Label projectIntent = new Label("正在读取项目的 Agent 设置…");
         projectIntent.setWrapText(true);
+        Button startTrial = new Button("领取 14 天 Pro 试用");
+        Button refreshAccess = new Button("刷新套餐状态");
+        startTrial.setDisable(true);
+        refreshAccess.setDisable(true);
 
-        loadRuntimeStatus(context.capabilityBus()).whenComplete((status, error) ->
-                Platform.runLater(() -> runtimeResult.setText(error == null
-                        ? readinessText(status.getAsJsonObject())
-                        : "无法读取程序级能力：" + rootMessage(error))));
+        Runnable loadStatus = () -> loadRuntimeStatus(context.capabilityBus()).whenComplete((status, error) ->
+                Platform.runLater(() -> {
+                    refreshAccess.setDisable(false);
+                    runtimeResult.setText(error == null
+                            ? readinessText(status.getAsJsonObject())
+                            : "无法读取程序级能力：" + rootMessage(error));
+                    String state = error == null && status.getAsJsonObject().has("state")
+                            ? status.getAsJsonObject().get("state").getAsString() : "UNKNOWN";
+                    startTrial.setDisable(!"TRIAL_AVAILABLE".equals(state));
+                    refreshAccess.setDisable("SIGNED_OUT".equals(state) || error != null);
+                }));
+
+        loadStatus.run();
+        refreshAccess.setOnAction(event -> {
+            refreshAccess.setDisable(true);
+            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                    LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY, new JsonObject())
+                    .whenComplete((value, error) -> {
+                        if (error != null) {
+                            Platform.runLater(() -> {
+                                refreshAccess.setDisable(false);
+                                runtimeResult.setText("套餐状态刷新失败：" + rootMessage(error));
+                            });
+                        } else {
+                            loadStatus.run();
+                        }
+                    });
+        });
+        startTrial.setOnAction(event -> {
+            startTrial.setDisable(true);
+            runtimeResult.setText("正在使用当前已验证设备领取试用…");
+            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
+                    LinkPluginContract.TRIAL_CLAIM_CAPABILITY, new JsonObject())
+                    .whenComplete((value, error) -> {
+                        if (error != null) {
+                            Platform.runLater(() -> {
+                                startTrial.setDisable(false);
+                                runtimeResult.setText("试用领取失败：" + rootMessage(error));
+                            });
+                        } else {
+                            loadStatus.run();
+                        }
+                    });
+        });
         loadProjectIntent(context.capabilityBus(), sessionId(context)).whenComplete((intent, error) ->
                 Platform.runLater(() -> projectIntent.setText(error == null
                         ? (intent.getAsJsonObject().get("requested").getAsBoolean()
@@ -79,7 +124,8 @@ final class LinkSessionController implements ProgramSessionController {
                 + "Agent 上传前后都会校验 SHA-256，凭据仅写入受保护的远端临时文件。 ");
         note.setWrapText(true);
 
-        VBox root = new VBox(10, title, runtimeResult, projectIntent, deployment, tunnel, note);
+        VBox root = new VBox(10, title, runtimeResult, new HBox(8, startTrial, refreshAccess),
+                projectIntent, deployment, tunnel, note);
         root.setPadding(new Insets(12));
         ScrollPane scroll = new ScrollPane(root);
         scroll.setFitToWidth(true);
@@ -464,6 +510,12 @@ final class LinkSessionController implements ProgramSessionController {
         return switch (state) {
             case "READY" -> "状态：已就绪。账号、Connector 和内置运行时可用，可安装或连接 Agent。";
             case "SIGNED_OUT" -> "状态：运行时已就绪，但尚未登录。可在下方复用 Program 登录流程。";
+            case "TRIAL_AVAILABLE" -> "状态：当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";
+            case "UPGRADE_REQUIRED" -> "状态：当前套餐不包含 JLShell Link，请升级 Plus 或 Pro。";
+            case "DISABLED_BY_ADMIN" -> "状态：JLShell Link 已被管理员停用，请联系管理员。";
+            case "VERSION_NOT_SUPPORTED" -> "状态：当前插件版本不在管理员允许范围内。";
+            case "CHECKING" -> "状态：正在检查套餐与插件策略，请稍后刷新。";
+            case "CHECK_FAILED" -> "状态：套餐检查失败，请检查网络或网站服务。";
             case "CONNECTOR_NOT_READY" -> "状态：Connector 未就绪。请在插件设置或项目管理中修复内置运行时。";
             case "RUNTIME_MISSING" -> "状态：插件缺少完整原生运行时，请重新安装正式插件包。";
             default -> "状态：" + state + "。请刷新或查看项目管理中的修复建议。";
