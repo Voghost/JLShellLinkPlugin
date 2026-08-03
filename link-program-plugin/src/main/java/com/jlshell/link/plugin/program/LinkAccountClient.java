@@ -28,6 +28,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.jlshell.link.plugin.common.LinkPluginContract;
 import com.jlshell.plugin.api.storage.PluginStorage;
 import com.jlshell.plugin.api.storage.SecureStorage;
 import com.sun.net.httpserver.HttpExchange;
@@ -40,12 +41,17 @@ final class LinkAccountClient implements AutoCloseable {
     private static final String TOKEN_EXPIRY_KEY = "account.token-expiry";
     private static final String ACCOUNT_KEY = "account.profile";
     private static final String DEVICE_ID_KEY = "account.device-id";
+    private static final String PROGRAM_SCOPE = "PROGRAM";
+    private static final String SESSION_SCOPE = "SESSION";
+    private static final Duration ACCESS_CACHE_TTL = Duration.ofSeconds(30);
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final PluginStorage storage;
     private final SecureStorage secrets;
     private final ConnectorProcessManager connector;
+    private final MachineFingerprintProvider machineFingerprint;
+    private final RequestTransport testTransport;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NEVER)
@@ -62,12 +68,29 @@ final class LinkAccountClient implements AutoCloseable {
     private volatile String deviceRecordId;
     private volatile String state = "SIGNED_OUT";
     private volatile String message;
+    private volatile JsonObject entitlement;
+    private volatile JsonObject programAccess;
+    private volatile JsonObject sessionAccess;
+    private volatile Instant accessCheckedAt;
+    private volatile String accessError;
     private volatile HttpServer loginServer;
 
     LinkAccountClient(PluginStorage storage, SecureStorage secrets, ConnectorProcessManager connector) {
+        this(storage, secrets, connector, MachineFingerprint::current, null);
+    }
+
+    LinkAccountClient(PluginStorage storage, SecureStorage secrets, ConnectorProcessManager connector,
+                      MachineFingerprintProvider machineFingerprint) {
+        this(storage, secrets, connector, machineFingerprint, null);
+    }
+
+    LinkAccountClient(PluginStorage storage, SecureStorage secrets, ConnectorProcessManager connector,
+                      MachineFingerprintProvider machineFingerprint, RequestTransport testTransport) {
         this.storage = storage;
         this.secrets = secrets;
         this.connector = connector;
+        this.machineFingerprint = machineFingerprint;
+        this.testTransport = testTransport;
         String configured = storage == null ? null : storage.get(BASE_URL_KEY);
         if (configured != null && !configured.isBlank()) {
             baseUri = validateBaseUri(configured);
@@ -87,6 +110,7 @@ final class LinkAccountClient implements AutoCloseable {
             }
             if (token != null && tokenExpiry != null && tokenExpiry.isAfter(Instant.now())) {
                 state = "AUTHENTICATED";
+                executor.execute(this::refreshAccessQuietly);
             } else if (token != null) {
                 clearSession();
             }
@@ -117,7 +141,47 @@ final class LinkAccountClient implements AutoCloseable {
         else result.add("account", account.deepCopy());
         if (tokenExpiry != null) result.addProperty("expiresAt", tokenExpiry.toString());
         if (message != null) result.addProperty("message", message);
+        result.add("subscription", subscriptionStatus());
         return result;
+    }
+
+    JsonObject subscriptionStatus() {
+        JsonObject result = new JsonObject();
+        result.addProperty("state", subscriptionState());
+        if (entitlement == null) {
+            result.add("entitlement", com.google.gson.JsonNull.INSTANCE);
+        } else {
+            result.add("entitlement", entitlement.deepCopy());
+        }
+        result.add("programAccess", programAccess == null
+                ? com.google.gson.JsonNull.INSTANCE : programAccess.deepCopy());
+        result.add("sessionAccess", sessionAccess == null
+                ? com.google.gson.JsonNull.INSTANCE : sessionAccess.deepCopy());
+        if (accessCheckedAt != null) result.addProperty("checkedAt", accessCheckedAt.toString());
+        if (accessError != null) result.addProperty("message", accessError);
+        return result;
+    }
+
+    CompletableFuture<JsonElement> refreshSubscription() {
+        return authenticated(() -> refreshAccessBlocking(true));
+    }
+
+    CompletableFuture<JsonElement> claimTrial() {
+        return authenticated(() -> {
+            JsonObject body = new JsonObject();
+            body.addProperty("deviceId", requireDeviceRecord());
+            body.addProperty("machineFingerprint", machineFingerprint.fingerprint());
+            request("POST", "/api/v1/account/trial", body, true);
+            return refreshAccessBlocking(true);
+        });
+    }
+
+    CompletableFuture<JsonElement> authorizeProgram(String entitlementCode) {
+        return authorize(PROGRAM_SCOPE, entitlementCode);
+    }
+
+    CompletableFuture<JsonElement> authorizeSession(String entitlementCode) {
+        return authorize(SESSION_SCOPE, entitlementCode);
     }
 
     CompletableFuture<JsonElement> startLogin() {
@@ -144,6 +208,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> catalog() {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.tcp-tunnel");
             JsonArray agents = request("GET", "/api/v1/link/agents", null, true).getAsJsonArray();
             for (JsonElement entry : agents) {
                 JsonObject agent = entry.getAsJsonObject();
@@ -161,6 +226,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> issueTicket(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.tcp-tunnel");
             JsonObject input = object(args);
             JsonObject body = new JsonObject();
             body.addProperty("deviceId", requireDeviceRecord());
@@ -173,6 +239,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> agentChallenge(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.agent-deploy");
             JsonObject body = new JsonObject();
             body.addProperty("purpose", "AGENT");
             body.addProperty("publicKey", required(object(args), "publicKey"));
@@ -182,6 +249,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> registerAgent(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.agent-deploy");
             JsonObject input = object(args);
             String publicKey = required(input, "publicKey");
             JsonObject registration = null;
@@ -276,6 +344,7 @@ final class LinkAccountClient implements AutoCloseable {
                 body.addProperty("redirectUri", redirect);
                 saveSession(request("POST", "/api/v1/desktop-token", body, false).getAsJsonObject());
                 registerDeviceIdentity();
+                refreshAccessBlocking(true);
                 state = "AUTHENTICATED";
                 message = null;
             } catch (Exception exchangeError) {
@@ -320,6 +389,7 @@ final class LinkAccountClient implements AutoCloseable {
         if (token == null || baseUri == null) return;
         try {
             saveSession(request("POST", "/api/v1/account/heartbeat", null, true).getAsJsonObject());
+            refreshAccessBlocking(false);
             state = "AUTHENTICATED";
             message = null;
         } catch (Exception error) {
@@ -348,12 +418,111 @@ final class LinkAccountClient implements AutoCloseable {
         }, executor);
     }
 
+    private CompletableFuture<JsonElement> authorize(String scope, String entitlementCode) {
+        return authenticated(() -> {
+            requireAccess(scope, entitlementCode);
+            return subscriptionStatus();
+        });
+    }
+
+    private void requireAccess(String scope, String entitlementCode) throws Exception {
+        refreshAccessBlocking(false);
+        JsonObject policy = SESSION_SCOPE.equals(scope) ? sessionAccess : programAccess;
+        if (policy == null || !policy.has("allowed") || !policy.get("allowed").getAsBoolean()) {
+            String reason = policy != null && policy.has("reason")
+                    ? policy.get("reason").getAsString() : "ACCESS_CHECK_FAILED";
+            throw new IllegalStateException(accessReason(reason));
+        }
+        if (entitlement == null || !hasEntitlement(entitlementCode)) {
+            boolean trialAvailable = entitlement != null && entitlement.has("trialAvailable")
+                    && entitlement.get("trialAvailable").getAsBoolean();
+            throw new IllegalStateException(trialAvailable
+                    ? "当前套餐不能使用此功能，可先领取 14 天 Pro 试用"
+                    : "当前套餐不能使用此功能，请升级 Plus 或 Pro");
+        }
+    }
+
+    private JsonObject refreshAccessBlocking(boolean force) throws Exception {
+        if (!force && accessCheckedAt != null
+                && accessCheckedAt.plus(ACCESS_CACHE_TTL).isAfter(Instant.now())
+                && entitlement != null && programAccess != null && sessionAccess != null) {
+            return subscriptionStatus();
+        }
+        try {
+            JsonObject nextEntitlement = request("GET", "/api/v1/account/entitlements", null, true)
+                    .getAsJsonObject();
+            String query = "?pluginId=" + encode(LinkPluginContract.PROGRAM_PLUGIN_ID)
+                    + "&version=" + encode(LinkPluginContract.VERSION) + "&scope=";
+            JsonObject nextProgram = request("GET", "/api/v1/account/plugin-access"
+                    + query + PROGRAM_SCOPE, null, true).getAsJsonObject();
+            JsonObject nextSession = request("GET", "/api/v1/account/plugin-access"
+                    + query + SESSION_SCOPE, null, true).getAsJsonObject();
+            entitlement = nextEntitlement;
+            programAccess = nextProgram;
+            sessionAccess = nextSession;
+            accessCheckedAt = Instant.now();
+            accessError = null;
+            return subscriptionStatus();
+        } catch (Exception error) {
+            accessError = rootMessage(error);
+            throw error;
+        }
+    }
+
+    private void refreshAccessQuietly() {
+        try {
+            if (token != null) refreshAccessBlocking(true);
+        } catch (Exception ignored) { }
+    }
+
+    private boolean hasEntitlement(String code) {
+        if (!entitlement.has("entitlements") || !entitlement.get("entitlements").isJsonArray()) return false;
+        for (JsonElement value : entitlement.getAsJsonArray("entitlements")) {
+            if (code.equals(value.getAsString())) return true;
+        }
+        return false;
+    }
+
+    private String subscriptionState() {
+        if (token == null) return "SIGNED_OUT";
+        if (accessError != null && entitlement == null) return "CHECK_FAILED";
+        if (entitlement == null || programAccess == null || sessionAccess == null) return "CHECKING";
+        for (JsonObject policy : java.util.List.of(programAccess, sessionAccess)) {
+            if (!policy.get("allowed").getAsBoolean()) {
+                return switch (policy.get("reason").getAsString()) {
+                    case "DISABLED_BY_ADMIN" -> "DISABLED_BY_ADMIN";
+                    case "VERSION_NOT_SUPPORTED" -> "VERSION_NOT_SUPPORTED";
+                    case "TRIAL_AVAILABLE" -> "TRIAL_AVAILABLE";
+                    default -> "UPGRADE_REQUIRED";
+                };
+            }
+        }
+        if (hasEntitlement("link.tcp-tunnel") && hasEntitlement("link.agent-deploy")) return "READY";
+        return entitlement.has("trialAvailable") && entitlement.get("trialAvailable").getAsBoolean()
+                ? "TRIAL_AVAILABLE" : "UPGRADE_REQUIRED";
+    }
+
+    private static String accessReason(String reason) {
+        return switch (reason) {
+            case "DISABLED_BY_ADMIN" -> "JLShell Link 已被管理员停用";
+            case "VERSION_NOT_SUPPORTED" -> "当前 JLShell Link 插件版本不在管理员允许范围内";
+            case "TRIAL_AVAILABLE" -> "当前套餐不可用，可先领取 14 天 Pro 试用";
+            case "UPGRADE_TO_PRO" -> "此功能需要 Pro 套餐";
+            case "UPGRADE_TO_PLUS" -> "此功能需要 Plus 或 Pro 套餐";
+            default -> "无法确认 JLShell Link 访问权限";
+        };
+    }
+
     private JsonElement request(String method, String path, JsonObject body, boolean authenticated) throws Exception {
+        String accessToken = authenticated ? requireToken() : null;
+        if (testTransport != null) {
+            return testTransport.request(method, path, body == null ? null : body.deepCopy(), accessToken);
+        }
         URI uri = requireBaseUri().resolve(path);
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(15))
                 .header("Accept", "application/json")
-                .header("User-Agent", "JLShellLinkPlugin/0.1.0");
-        if (authenticated) builder.header("Authorization", "Bearer " + requireToken());
+                .header("User-Agent", "JLShellLinkPlugin/" + LinkPluginContract.VERSION);
+        if (authenticated) builder.header("Authorization", "Bearer " + accessToken);
         if (body == null) builder.method(method, HttpRequest.BodyPublishers.noBody());
         else builder.header("Content-Type", "application/json")
                 .method(method, HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
@@ -403,6 +572,11 @@ final class LinkAccountClient implements AutoCloseable {
         tokenExpiry = null;
         account = null;
         deviceRecordId = null;
+        entitlement = null;
+        programAccess = null;
+        sessionAccess = null;
+        accessCheckedAt = null;
+        accessError = null;
         state = "SIGNED_OUT";
         if (secrets.available()) {
             secrets.remove(TOKEN_KEY);
@@ -524,4 +698,12 @@ final class LinkAccountClient implements AutoCloseable {
 
     @FunctionalInterface
     private interface CheckedSupplier<T> { T get() throws Exception; }
+
+    @FunctionalInterface
+    interface MachineFingerprintProvider { String fingerprint(); }
+
+    @FunctionalInterface
+    interface RequestTransport {
+        JsonElement request(String method, String path, JsonObject body, String accessToken) throws Exception;
+    }
 }

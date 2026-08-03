@@ -17,6 +17,12 @@ SHA-256，并设置仅当前用户可读写执行的权限。Website 默认使�
 只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 Program 插件的宿主
 SecureStorage 中，不传给会话控制器或写入日志。
 
+登录后 Program 会从 Website 读取当前 Free/Plus/Pro entitlement，并分别校验同一插件
+标识的 Program 与 Session 策略。Agent 安装、注册、目录、取票和隧道能力都在实际
+capability 入口再次检查，不依赖界面按钮防绕过。Free 用户可直接使用已完成 PeerId
+持钥验证的桌面设备领取一次 14 天 Pro 试用；客户端只上传产品域 SHA-256 机器指纹，
+不会上传或保存操作系统原始机器标识。
+
 ## 阶段 3 第一批能力
 
 Program 插件注册以下稳定 capability：
@@ -27,6 +33,7 @@ Program 插件注册以下稳定 capability：
 - `link.project.agent-intent`
 - `link.agent.install-spec`
 - `link.account.status`、`link.account.login`、`link.account.logout`
+- `link.subscription.status`、`link.subscription.refresh`、`link.subscription.trial.claim`
 - `link.catalog`、`link.ticket.issue`
 - `link.agent.challenge`、`link.agent.register`、`link.authority`
 
@@ -34,7 +41,7 @@ Connector 只使用 `127.0.0.1:0` 打开本地监听。签名票据写入插件�
 0600 临时文件，Connector 报告监听地址后立即删除；插件停用时终止全部子进程。
 
 新建项目默认启用 Agent 引导；已有项目的管理页会展示账号、内置运行时和 Connector
-状态，以及可执行的登录/修复入口。会话贡献提供检测、确认、上传、注册、服务安装和
+状态、当前套餐、Program/Session 策略以及可执行的登录/试用/修复入口。会话贡献提供检测、确认、上传、注册、服务安装和
 连接绑定的分步向导，并从内置目录选择以下固定名称之一：
 
 ```text
