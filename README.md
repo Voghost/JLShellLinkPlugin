@@ -27,6 +27,7 @@ Program 插件注册以下稳定 capability：
 - `link.project.agent-intent`
 - `link.agent.install-spec`
 - `link.account.status`
+- `link.subscription.status`、`link.subscription.refresh`、`link.subscription.trial.claim`
 - `link.catalog`、`link.ticket.issue`
 - `link.agent.challenge`、`link.agent.register`、`link.authority`
 
@@ -47,6 +48,8 @@ jlshell-agent-windows-x64.exe
 正式文件。账号登录由 JLShell 的“账号设置”统一完成，Link 不再显示、创建或保存第二份
 登录态。宿主仅向 Link 暴露非敏感账号状态、设备 ID 和受限的 Link 控制平面请求；随后
 插件调用 Connector 对一次性 challenge 签名，将宿主设备绑定到 Connector PeerId。
+套餐、试用与 Program/Session 策略也通过相同的宿主请求通道查询和校验，插件不会读取或
+续期账号令牌。
 会话控制器可通过 Program 内部能力读取账号 Agent/目标目录并自动签发单流票据，但访问
 令牌始终留在宿主中。
 
