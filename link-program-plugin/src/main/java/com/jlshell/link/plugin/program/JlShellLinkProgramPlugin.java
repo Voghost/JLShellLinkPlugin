@@ -253,13 +253,16 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             JsonObject runtime = runtimeManager.status();
             JsonObject connectorStatus = connectorManager.status();
             JsonObject account = accountClient.status();
-            overall.setText(readinessText(runtime, connectorStatus, account));
+            JsonObject subscription = subscriptions.status();
+            overall.setText(readinessText(runtime, connectorStatus, account, subscription));
             runtimeState.setText("内置运行时：" + runtime.get("state").getAsString()
                     + " · " + runtime.get("message").getAsString());
             connectorState.setText("Connector：" + connectorStatus.get("state").getAsString()
                     + " · 活跃隧道 " + connectorStatus.get("activeTunnels").getAsInt());
             accountState.setText("账号：" + account.get("state").getAsString()
                     + " · " + account.get("baseUrl").getAsString());
+            subscriptionState.setText(subscriptionText(subscription));
+            trial.setDisable(!"TRIAL_AVAILABLE".equals(subscription.get("state").getAsString()));
         };
 
         Button save = new Button("保存高级配置");
@@ -285,7 +288,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             connectorManager.configure(defaults);
             update.run();
         });
-        refresh.setOnAction(event -> update.run());
+        refresh.setOnAction(event -> subscriptions.refresh().whenComplete((ignored, error) ->
+                javafx.application.Platform.runLater(update)));
+        trial.setOnAction(event -> subscriptions.claimTrial(MachineFingerprint.current(),
+                context.accountSession().snapshot().deviceId()).whenComplete((ignored, error) ->
+                javafx.application.Platform.runLater(update)));
         VBox advanced = new VBox(8, new Label("Connector 覆盖路径"), connector,
                 new Label("身份文件"), identity,
                 new Label("Agent 发布目录覆盖路径"), agents, save);
@@ -297,8 +304,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 + "请先在“账号设置”中通过 Web 登录；进入 SSH 会话后按向导安装 Agent。");
         note.setWrapText(true);
         HBox runtimeActions = new HBox(8, repair);
-        VBox root = new VBox(10, title, overall, accountState, runtimeState, connectorState,
-                new HBox(8, refresh), runtimeActions, note, advancedPane);
+        VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState, connectorState,
+                new HBox(8, trial, refresh), runtimeActions, note, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
         return root;
@@ -395,7 +402,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         return result;
     }
 
-    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account) {
+    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account,
+                                        JsonObject subscriptionStatus) {
         if (!runtime.get("available").getAsBoolean()) {
             return "需要修复：插件未包含完整运行时。请重新安装正式插件包，或点击重新准备运行时。";
         }
@@ -405,7 +413,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
             return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
         }
-        String subscription = account.getAsJsonObject("subscription").get("state").getAsString();
+        String subscription = subscriptionStatus.get("state").getAsString();
         if (!"READY".equals(subscription)) {
             return switch (subscription) {
                 case "TRIAL_AVAILABLE" -> "当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";

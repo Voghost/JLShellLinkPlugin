@@ -94,27 +94,8 @@ final class LinkProjectContribution implements ProjectCreationContribution {
             connector.configure(ConnectorConfiguration.load(storage, prepared));
             refreshStatus.run();
         });
-        trial.setOnAction(event -> {
-            trial.setDisable(true);
-            account.claimTrial().whenComplete((value, error) -> Platform.runLater(() -> {
-                refreshStatus.run();
-                overall.setText(error == null
-                        ? "状态：14 天 Pro 试用已开通，可安装或连接 Agent"
-                        : "试用领取失败：" + rootMessage(error));
-            }));
-        });
-        refresh.setOnAction(event -> {
-            refresh.setDisable(true);
-            account.refreshSubscription().whenComplete((value, error) -> Platform.runLater(() -> {
-                refresh.setDisable(false);
-                refreshStatus.run();
-                if (error != null) overall.setText("套餐状态刷新失败：" + rootMessage(error));
-            }));
-        });
+        refresh.setOnAction(event -> refreshStatus.run());
         refreshStatus.run();
-        if ("AUTHENTICATED".equals(account.status().get("state").getAsString())) {
-            account.refreshSubscription().whenComplete((value, error) -> Platform.runLater(refreshStatus));
-        }
 
         return new VBox(7, heading, requested, overall, details,
                 new HBox(8, repair, refresh), guide);
@@ -127,8 +108,6 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         boolean runtimeReady = runtimeStatus.get("available").getAsBoolean();
         boolean connectorReady = connectorStatus.get("available").getAsBoolean();
         boolean signedIn = "AUTHENTICATED".equals(accountStatus.get("state").getAsString());
-        JsonObject subscription = accountStatus.getAsJsonObject("subscription");
-        String access = subscription.get("state").getAsString();
         overall.setText(!runtimeReady ? "状态：需要重新安装或修复完整插件运行时"
                 : !connectorReady ? "状态：Connector 尚未就绪"
                 : !signedIn ? "状态：运行时已就绪，请在 JLShell 的账号设置中通过 Web 登录"
