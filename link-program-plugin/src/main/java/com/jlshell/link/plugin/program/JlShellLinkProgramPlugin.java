@@ -233,10 +233,13 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Label overall = new Label();
         overall.setWrapText(true);
         Label accountState = new Label();
+        Label subscriptionState = new Label();
+        subscriptionState.setWrapText(true);
         Label runtimeState = new Label();
         Label connectorState = new Label();
 
         Button refresh = new Button("刷新状态");
+        Button trial = new Button("领取 14 天 Pro 试用");
         Button repair = new Button("重新准备内置运行时");
 
         TextField connector = new TextField(text(configuration.connectorBinary()));
@@ -374,7 +377,12 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 : !authenticated ? "SIGNED_OUT" : subscription.get("state").getAsString();
         String nextAction = !runtimeReady ? "REINSTALL_OR_REPAIR_PLUGIN"
                 : !connectorReady ? "REPAIR_CONNECTOR"
-                : !authenticated ? "LOGIN" : "OPEN_SESSION";
+                : !authenticated ? "LOGIN" : switch (state) {
+                    case "READY" -> "OPEN_SESSION";
+                    case "TRIAL_AVAILABLE" -> "START_TRIAL_OR_UPGRADE";
+                    case "CHECKING" -> "REFRESH_SUBSCRIPTION";
+                    default -> "CONTACT_ADMIN_OR_UPGRADE";
+                };
         JsonObject result = new JsonObject();
         result.addProperty("available", runtimeReady && connectorReady && authenticated && "READY".equals(state));
         result.addProperty("state", state);
@@ -397,7 +405,36 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
             return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
         }
+        String subscription = account.getAsJsonObject("subscription").get("state").getAsString();
+        if (!"READY".equals(subscription)) {
+            return switch (subscription) {
+                case "TRIAL_AVAILABLE" -> "当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";
+                case "UPGRADE_REQUIRED" -> "当前套餐不包含 JLShell Link，请升级 Plus 或 Pro。";
+                case "DISABLED_BY_ADMIN" -> "JLShell Link 已被管理员停用，请联系管理员。";
+                case "VERSION_NOT_SUPPORTED" -> "当前插件版本不在管理员允许范围内，请升级或回退插件。";
+                case "CHECK_FAILED" -> "无法检查套餐状态，请确认网站服务和网络连接。";
+                default -> "正在检查套餐与插件策略，请稍后刷新状态。";
+            };
+        }
         return "JLShell Link 已就绪。打开项目中的 SSH 会话即可检测并安装 Agent。";
+    }
+
+    private static String subscriptionText(JsonObject subscription) {
+        String state = subscription.get("state").getAsString();
+        if (!subscription.has("entitlement") || subscription.get("entitlement").isJsonNull()) {
+            return "套餐：" + state;
+        }
+        JsonObject entitlement = subscription.getAsJsonObject("entitlement");
+        String plan = entitlement.get("plan").getAsString();
+        String suffix = entitlement.has("effectiveUntil") && !entitlement.get("effectiveUntil").isJsonNull()
+                ? " · 有效至 " + entitlement.get("effectiveUntil").getAsString() : "";
+        return "套餐：" + plan + " · 权限状态 " + state + suffix;
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) current = current.getCause();
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
     private static String requiredString(JsonObject object, String name) {

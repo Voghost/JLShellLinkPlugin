@@ -15,6 +15,15 @@ SFTP 上传 Agent。内置文件解包前后都必须与运行时清单中的大
 Agent 凭据经 SFTP 写入随机临时文件，Unix 上先设为 0600 再原子替换，且不会出现在远端
 命令行。
 
+试用机器指纹优先读取 Linux machine-id、macOS IOPlatformUUID 或 Windows MachineGuid，
+只在进程内按 `jlshell-trial-machine-v1` 产品域执行 SHA-256 后上传；原始标识不进入
+SecureStorage、PluginStorage、HTTP 请求或日志。平台标识不可用时只使用排序后的本机
+网卡硬件地址作为降级输入，同样只上传摘要。服务端会再使用独立 Pepper 做 HMAC。
+
+套餐快照最多缓存 30 秒。Agent 安装、Agent 注册、目录、票据和隧道入口都会校验
+Website 的 Program/Session 插件策略与具体 entitlement；缓存过期后的网络检查失败时
+关闭访问，不会按过期缓存降级放行。
+
 当前 SHA-256 只保证插件内文件与清单一致，不能独立证明发布者身份。生产发布前必须增加
 插件签名、可信公钥轮换、版本回滚保护和平台代码签名。不得把票据、访问令牌、机器码
 或 SSH 凭据写入普通 PluginStorage、进程命令行或日志。Linux systemd 用户服务启用

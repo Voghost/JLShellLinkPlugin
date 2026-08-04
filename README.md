@@ -17,6 +17,12 @@ SHA-256，并设置仅当前用户可读写执行的权限。Website 默认使�
 只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 JLShell 宿主的加密存储中，
 不传给插件、不传给会话控制器，也不写入日志。
 
+登录后 Program 会从 Website 读取当前 Free/Plus/Pro entitlement，并分别校验同一插件
+标识的 Program 与 Session 策略。Agent 安装、注册、目录、取票和隧道能力都在实际
+capability 入口再次检查，不依赖界面按钮防绕过。Free 用户可直接使用已完成 PeerId
+持钥验证的桌面设备领取一次 14 天 Pro 试用；客户端只上传产品域 SHA-256 机器指纹，
+不会上传或保存操作系统原始机器标识。
+
 ## 阶段 3 第一批能力
 
 Program 插件注册以下稳定 capability：

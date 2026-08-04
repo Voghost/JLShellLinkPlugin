@@ -74,6 +74,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> issueTicket(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.tcp-tunnel");
             JsonObject input = object(args);
             JsonObject body = new JsonObject();
             body.addProperty("deviceId", requireDeviceRecord());
@@ -86,6 +87,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> agentChallenge(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.agent-deploy");
             JsonObject body = new JsonObject();
             body.addProperty("purpose", "AGENT");
             body.addProperty("publicKey", required(object(args), "publicKey"));
@@ -95,6 +97,7 @@ final class LinkAccountClient implements AutoCloseable {
 
     CompletableFuture<JsonElement> registerAgent(JsonElement args) {
         return authenticated(() -> {
+            requireAccess(SESSION_SCOPE, "link.agent-deploy");
             JsonObject input = object(args);
             String publicKey = required(input, "publicKey");
             JsonObject registration = null;
