@@ -36,6 +36,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private ProgramPluginContext context;
     private ConnectorProcessManager connectorManager;
     private LinkAccountClient accountClient;
+    private LinkSubscriptionService subscriptions;
     private BundledRuntimeManager runtimeManager;
     private final List<Registration> registrations = new ArrayList<>();
     private final Map<String, LinkBindingStore.SessionReference> sessionReferences = new ConcurrentHashMap<>();
@@ -79,6 +80,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         connectorManager = new ConnectorProcessManager(
                 ConnectorConfiguration.load(context.storage(), bundled));
         accountClient = new LinkAccountClient(context.accountSession(), connectorManager);
+        subscriptions = new LinkSubscriptionService(context.accountSession());
         bindingStore = new LinkBindingStore(context.storage());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
@@ -88,7 +90,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_OPEN_CAPABILITY)
                 .description("Start a loopback-only Connector tunnel from a signed Link ticket.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> connectorManager.open(args))
+                .handler((args, capabilityContext) -> subscriptions.requireSession("link.tcp-tunnel")
+                        .thenCompose(ignored -> connectorManager.open(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_CLOSE_CAPABILITY)
                 .description("Stop a Connector tunnel owned by this plugin process.")
@@ -104,13 +107,28 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)
                 .description("Resolve a locally configured Agent binary for a supported remote platform.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> agentInstallSpec(args))
+                .handler((args, capabilityContext) -> subscriptions.requireSession("link.agent-deploy")
+                        .thenCompose(ignored -> agentInstallSpec(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_STATUS_CAPABILITY)
                 .description("Return the non-sensitive host account session state used by Link.")
                 .requiresSession(false)
                 .handler((args, capabilityContext) -> CompletableFuture.completedFuture(accountClient.status()))
                 .build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY)
+                .description("Return cached Link plan and Program/Session policy state.")
+                .requiresSession(false)
+                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(subscriptions.status())).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY)
+                .description("Refresh Link plan and Program/Session policy state through the host account gateway.")
+                .requiresSession(false).handler((args, capabilityContext) -> subscriptions.refresh()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TRIAL_CLAIM_CAPABILITY)
+                .description("Claim the one-time Link trial without exposing the host account token.")
+                .requiresSession(false).handler((args, capabilityContext) -> {
+                    JsonObject input = args == null || !args.isJsonObject() ? new JsonObject() : args.getAsJsonObject();
+                    return subscriptions.claimTrial(requiredString(input, "machineFingerprint"),
+                            context.accountSession().snapshot().deviceId());
+                }).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
                 .description("List owned Agents, targets and available Relays without exposing the account token.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
@@ -184,6 +202,9 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
         for (String capability : List.of(
                 LinkPluginContract.ACCOUNT_STATUS_CAPABILITY,
+                LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY,
+                LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY,
+                LinkPluginContract.TRIAL_CLAIM_CAPABILITY,
                 LinkPluginContract.LINK_CATALOG_CAPABILITY,
                 LinkPluginContract.TICKET_ISSUE_CAPABILITY,
                 LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
@@ -195,6 +216,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
         accountClient.close();
         accountClient = null;
+        subscriptions = null;
         bindingStore = null;
         connectorManager.close();
         connectorManager = null;
@@ -346,20 +368,22 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         boolean runtimeReady = runtime.get("available").getAsBoolean();
         boolean connectorReady = connector.get("available").getAsBoolean();
         boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
+        JsonObject subscription = subscriptions.status();
         String state = !runtimeReady ? "RUNTIME_MISSING"
                 : !connectorReady ? "CONNECTOR_NOT_READY"
-                : !authenticated ? "SIGNED_OUT" : "READY";
+                : !authenticated ? "SIGNED_OUT" : subscription.get("state").getAsString();
         String nextAction = !runtimeReady ? "REINSTALL_OR_REPAIR_PLUGIN"
                 : !connectorReady ? "REPAIR_CONNECTOR"
                 : !authenticated ? "LOGIN" : "OPEN_SESSION";
         JsonObject result = new JsonObject();
-        result.addProperty("available", runtimeReady && connectorReady && authenticated);
+        result.addProperty("available", runtimeReady && connectorReady && authenticated && "READY".equals(state));
         result.addProperty("state", state);
         result.addProperty("nextAction", nextAction);
         if (connector.has("version")) result.add("version", connector.get("version").deepCopy());
         result.add("runtime", runtime.deepCopy());
         result.add("connector", connector.deepCopy());
         result.add("account", account.deepCopy());
+        result.add("subscription", subscription.deepCopy());
         return result;
     }
 
