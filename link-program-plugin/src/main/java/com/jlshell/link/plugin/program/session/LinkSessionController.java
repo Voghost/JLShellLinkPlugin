@@ -150,12 +150,10 @@ final class LinkSessionController implements ProgramSessionController {
         steps.setWrapText(true);
         TextArea result = output("点击“检测当前服务器”开始。不会在确认前写入远端文件。", 6);
         Button detect = new Button("检测当前服务器");
-        Button login = new Button("登录账号（复用 Program 登录态）");
         Button deploy = new Button("安装、注册并绑定当前连接");
         deploy.setDisable(true);
         SshSessionContext ssh = context.sshSession().orElse(null);
         detect.setDisable(ssh == null);
-        login.setDisable(ssh == null);
         AtomicReference<RemotePlatform> detected = new AtomicReference<>();
 
         detect.setOnAction(event -> {
@@ -178,17 +176,6 @@ final class LinkSessionController implements ProgramSessionController {
                         + "\n默认授权目标：127.0.0.1:22"
                         + "\n下一步：点击安装按钮并确认。 ");
             }));
-        });
-        login.setOnAction(event -> {
-            login.setDisable(true);
-            ProgramCapabilityClient.invoke(context.capabilityBus(), null,
-                    LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY, new JsonObject())
-                    .whenComplete((value, error) -> Platform.runLater(() -> {
-                        login.setDisable(false);
-                        result.setText(error == null
-                                ? "已打开 Program 插件的浏览器登录流程。完成登录后即可继续安装。"
-                                : "登录失败：" + rootMessage(error));
-                    }));
         });
         deploy.setOnAction(event -> {
             RemotePlatform platform = detected.get();
@@ -235,7 +222,7 @@ final class LinkSessionController implements ProgramSessionController {
                         }));
                     });
         });
-        return new VBox(7, heading, steps, new VBox(6, detect, login, deploy), result);
+        return new VBox(7, heading, steps, new VBox(6, detect, deploy), result);
     }
 
     private Node tunnelView(PluginContext context) {
@@ -509,13 +496,7 @@ final class LinkSessionController implements ProgramSessionController {
         String state = status.has("state") ? status.get("state").getAsString() : "UNKNOWN";
         return switch (state) {
             case "READY" -> "状态：已就绪。账号、Connector 和内置运行时可用，可安装或连接 Agent。";
-            case "SIGNED_OUT" -> "状态：运行时已就绪，但尚未登录。可在下方复用 Program 登录流程。";
-            case "TRIAL_AVAILABLE" -> "状态：当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";
-            case "UPGRADE_REQUIRED" -> "状态：当前套餐不包含 JLShell Link，请升级 Plus 或 Pro。";
-            case "DISABLED_BY_ADMIN" -> "状态：JLShell Link 已被管理员停用，请联系管理员。";
-            case "VERSION_NOT_SUPPORTED" -> "状态：当前插件版本不在管理员允许范围内。";
-            case "CHECKING" -> "状态：正在检查套餐与插件策略，请稍后刷新。";
-            case "CHECK_FAILED" -> "状态：套餐检查失败，请检查网络或网站服务。";
+            case "SIGNED_OUT" -> "状态：运行时已就绪，但尚未登录。请在 JLShell 的账号设置中通过 Web 登录后刷新。";
             case "CONNECTOR_NOT_READY" -> "状态：Connector 未就绪。请在插件设置或项目管理中修复内置运行时。";
             case "RUNTIME_MISSING" -> "状态：插件缺少完整原生运行时，请重新安装正式插件包。";
             default -> "状态：" + state + "。请刷新或查看项目管理中的修复建议。";

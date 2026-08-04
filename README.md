@@ -2,10 +2,10 @@
 
 JLShell Link 的独立私有插件工程，仓库为 `Voghost/JLShellLinkPlugin`。项目只生成一个
 Program 插件 JAR，插件标识为 `com.jlshell.link.program`。它统一管理 Connector 身份、
-账号与安全存储、项目 Agent 意图、Agent 部署以及隧道生命周期。
+项目 Agent 意图、Agent 部署以及隧道生命周期；账号会话由 JLShell 宿主统一管理。
 
 Program 插件通过 JLShell Plugin SDK 1.1.0 的 `sessionIntegration()` 注册 SSH 会话贡献，
-并使用 SDK 1.2.0 的项目管理贡献展示已有项目状态和修复引导。
+并使用 SDK 1.2.0 的项目管理贡献和 SDK 1.3.0 的宿主账号会话网关展示已有项目状态和修复引导。
 宿主在用户打开 JLShell Link 时提供当前 `SshSessionContext`，所以三平台检测、SFTP 安全
 上传和隧道界面都在同一个 Program 插件中完成，不再发布独立 Session 插件、第二个
 ServiceLoader 入口或第二个插件 ID。
@@ -14,8 +14,8 @@ ServiceLoader 入口或第二个插件 ID。
 首次激活时自动解包到 `~/.jlshell/link/runtime/<version>/`，逐文件核对清单中的大小和
 SHA-256，并设置仅当前用户可读写执行的权限。Website 默认使用
 `https://jlshell.oomn.net`，Connector、身份文件和 Agent 目录无需普通用户填写；设置页
-只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 Program 插件的宿主
-SecureStorage 中，不传给会话控制器或写入日志。
+只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 JLShell 宿主的加密存储中，
+不传给插件、不传给会话控制器，也不写入日志。
 
 登录后 Program 会从 Website 读取当前 Free/Plus/Pro entitlement，并分别校验同一插件
 标识的 Program 与 Session 策略。Agent 安装、注册、目录、取票和隧道能力都在实际
@@ -32,7 +32,7 @@ Program 插件注册以下稳定 capability：
 - `link.tunnel.close`
 - `link.project.agent-intent`
 - `link.agent.install-spec`
-- `link.account.status`、`link.account.login`、`link.account.logout`
+- `link.account.status`
 - `link.subscription.status`、`link.subscription.refresh`、`link.subscription.trial.claim`
 - `link.catalog`、`link.ticket.issue`
 - `link.agent.challenge`、`link.agent.register`、`link.authority`
@@ -41,7 +41,7 @@ Connector 只使用 `127.0.0.1:0` 打开本地监听。签名票据写入插件�
 0600 临时文件，Connector 报告监听地址后立即删除；插件停用时终止全部子进程。
 
 新建项目默认启用 Agent 引导；已有项目的管理页会展示账号、内置运行时和 Connector
-状态、当前套餐、Program/Session 策略以及可执行的登录/试用/修复入口。会话贡献提供检测、确认、上传、注册、服务安装和
+状态，以及账号设置与修复指引。会话贡献提供检测、确认、上传、注册、服务安装和
 连接绑定的分步向导，并从内置目录选择以下固定名称之一：
 
 ```text
@@ -51,13 +51,13 @@ jlshell-agent-windows-x64.exe
 ```
 
 上传使用随机临时文件，本地和远端 SHA-256 一致后才执行 `chmod 700`（Unix）并替换
-正式文件。Session 中的登录按钮调用同一个 Program 账号能力，复用全局 PKCE 登录态，
-不会生成第二份账号或令牌。
-
-Program 使用系统浏览器和本机临时回环监听完成 Authorization Code + PKCE S256，
-随后调用 Connector 对一次性 challenge 签名，将桌面设备绑定到 Connector PeerId。
+正式文件。账号登录由 JLShell 的“账号设置”统一完成，Link 不再显示、创建或保存第二份
+登录态。宿主仅向 Link 暴露非敏感账号状态、设备 ID 和受限的 Link 控制平面请求；随后
+插件调用 Connector 对一次性 challenge 签名，将宿主设备绑定到 Connector PeerId。
+套餐、试用与 Program/Session 策略也通过相同的宿主请求通道查询和校验，插件不会读取或
+续期账号令牌。
 会话控制器可通过 Program 内部能力读取账号 Agent/目标目录并自动签发单流票据，但访问
-令牌始终留在账号客户端中。
+令牌始终留在宿主中。
 
 “部署、注册并启动 Agent”会在远端生成 0600 Ed25519 身份、完成持钥注册、登记
 `127.0.0.1:22` 精确目标，并通过 SFTP 下发 0600 节点凭据与 Authority keyring。
@@ -72,7 +72,7 @@ target` 本地绑定。会话贡献加载账号目录时优先选择当前连接
 ## SDK 与本地构建
 
 默认从 Maven Central 获取支持 Program 会话贡献的 SDK
-`net.oomn.jlshell:plugin-api:1.2.0`，构建不需要 GitHub Packages 凭据或额外
+`net.oomn.jlshell:plugin-api:1.3.0` 和同版本 `program-api`，构建不需要 GitHub Packages 凭据或额外
 Maven `settings.xml`。
 
 需要联调尚未发布的宿主 API 变更时，可先在相邻 JLShell 仓库安装当前 API，再覆盖
@@ -80,7 +80,7 @@ Maven `settings.xml`。
 
 ```bash
 cd ../JLShell
-mvn -pl plugin-api -am install
+mvn -pl plugin-api,program-api -am install
 
 cd ../JLShellLinkPlugin
 mvn verify -Djlshell.plugin-api.version=0.1.0.RELEASE

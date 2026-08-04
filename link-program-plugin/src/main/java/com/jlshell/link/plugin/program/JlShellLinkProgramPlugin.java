@@ -36,6 +36,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private ProgramPluginContext context;
     private ConnectorProcessManager connectorManager;
     private LinkAccountClient accountClient;
+    private LinkSubscriptionService subscriptions;
     private BundledRuntimeManager runtimeManager;
     private final List<Registration> registrations = new ArrayList<>();
     private final Map<String, LinkBindingStore.SessionReference> sessionReferences = new ConcurrentHashMap<>();
@@ -78,7 +79,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         BundledRuntimeManager.PreparedRuntime bundled = runtimeManager.prepare();
         connectorManager = new ConnectorProcessManager(
                 ConnectorConfiguration.load(context.storage(), bundled));
-        accountClient = new LinkAccountClient(context.storage(), context.secureStorage(), connectorManager);
+        accountClient = new LinkAccountClient(context.accountSession(), connectorManager);
+        subscriptions = new LinkSubscriptionService(context.accountSession());
         bindingStore = new LinkBindingStore(context.storage());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
@@ -88,7 +90,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_OPEN_CAPABILITY)
                 .description("Start a loopback-only Connector tunnel from a signed Link ticket.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> accountClient.authorizeSession("link.tcp-tunnel")
+                .handler((args, capabilityContext) -> subscriptions.requireSession("link.tcp-tunnel")
                         .thenCompose(ignored -> connectorManager.open(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_CLOSE_CAPABILITY)
@@ -105,30 +107,28 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)
                 .description("Resolve a locally configured Agent binary for a supported remote platform.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> accountClient.authorizeSession("link.agent-deploy")
+                .handler((args, capabilityContext) -> subscriptions.requireSession("link.agent-deploy")
                         .thenCompose(ignored -> agentInstallSpec(args)))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_STATUS_CAPABILITY)
-                .description("Return the encrypted Program-level Link account session state.")
+                .description("Return the non-sensitive host account session state used by Link.")
                 .requiresSession(false)
                 .handler((args, capabilityContext) -> CompletableFuture.completedFuture(accountClient.status()))
                 .build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY)
-                .description("Start browser Authorization Code + PKCE desktop login.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.startLogin()).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY)
-                .description("Revoke and erase the encrypted Link account session.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.logout()).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY)
-                .description("Return the cached Link plan, trial and plugin policy state.")
-                .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
-                        accountClient.subscriptionStatus())).build());
+                .description("Return cached Link plan and Program/Session policy state.")
+                .requiresSession(false)
+                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(subscriptions.status())).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY)
-                .description("Refresh Link entitlements and Program/Session plugin policies.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.refreshSubscription()).build());
+                .description("Refresh Link plan and Program/Session policy state through the host account gateway.")
+                .requiresSession(false).handler((args, capabilityContext) -> subscriptions.refresh()).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TRIAL_CLAIM_CAPABILITY)
-                .description("Claim the one-time 14-day Pro trial for the verified desktop device.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.claimTrial()).build());
+                .description("Claim the one-time Link trial without exposing the host account token.")
+                .requiresSession(false).handler((args, capabilityContext) -> {
+                    JsonObject input = args == null || !args.isJsonObject() ? new JsonObject() : args.getAsJsonObject();
+                    return subscriptions.claimTrial(requiredString(input, "machineFingerprint"),
+                            context.accountSession().snapshot().deviceId());
+                }).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
                 .description("List owned Agents, targets and available Relays without exposing the account token.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
@@ -202,8 +202,6 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
         for (String capability : List.of(
                 LinkPluginContract.ACCOUNT_STATUS_CAPABILITY,
-                LinkPluginContract.ACCOUNT_LOGIN_CAPABILITY,
-                LinkPluginContract.ACCOUNT_LOGOUT_CAPABILITY,
                 LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY,
                 LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY,
                 LinkPluginContract.TRIAL_CLAIM_CAPABILITY,
@@ -218,6 +216,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
         accountClient.close();
         accountClient = null;
+        subscriptions = null;
         bindingStore = null;
         connectorManager.close();
         connectorManager = null;
@@ -239,8 +238,6 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Label runtimeState = new Label();
         Label connectorState = new Label();
 
-        Button login = new Button("登录 JLShell 账号");
-        Button logout = new Button("退出账号");
         Button refresh = new Button("刷新状态");
         Button trial = new Button("领取 14 天 Pro 试用");
         Button repair = new Button("重新准备内置运行时");
@@ -251,28 +248,21 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         identity.setPromptText("Connector 身份文件路径");
         TextField agents = new TextField(text(configuration.agentBundleDirectory()));
         agents.setPromptText("默认自动使用插件内置三平台 Agent");
-        TextField website = new TextField(accountClient.configuredBaseUrl());
-        website.setPromptText(LinkAccountClient.DEFAULT_BASE_URL);
 
         Runnable update = () -> {
             JsonObject runtime = runtimeManager.status();
             JsonObject connectorStatus = connectorManager.status();
             JsonObject account = accountClient.status();
-            overall.setText(readinessText(runtime, connectorStatus, account));
+            JsonObject subscription = subscriptions.status();
+            overall.setText(readinessText(runtime, connectorStatus, account, subscription));
             runtimeState.setText("内置运行时：" + runtime.get("state").getAsString()
                     + " · " + runtime.get("message").getAsString());
             connectorState.setText("Connector：" + connectorStatus.get("state").getAsString()
                     + " · 活跃隧道 " + connectorStatus.get("activeTunnels").getAsInt());
             accountState.setText("账号：" + account.get("state").getAsString()
                     + " · " + account.get("baseUrl").getAsString());
-            JsonObject subscription = account.getAsJsonObject("subscription");
             subscriptionState.setText(subscriptionText(subscription));
-            boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
-            login.setDisable(authenticated || !connectorStatus.get("available").getAsBoolean());
-            logout.setDisable(!authenticated);
-            refresh.setDisable(!authenticated);
-            trial.setDisable(!authenticated || !"TRIAL_AVAILABLE".equals(
-                    subscription.get("state").getAsString()));
+            trial.setDisable(!"TRIAL_AVAILABLE".equals(subscription.get("state").getAsString()));
         };
 
         Button save = new Button("保存高级配置");
@@ -280,7 +270,6 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             try {
                 ConnectorConfiguration updated = new ConnectorConfiguration(
                         path(connector.getText()), path(identity.getText()), path(agents.getText())).normalized();
-                accountClient.configureBaseUrl(website.getText());
                 updated.save(context.storage());
                 connectorManager.configure(updated);
                 update.run();
@@ -299,51 +288,24 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             connectorManager.configure(defaults);
             update.run();
         });
-        refresh.setOnAction(event -> {
-            refresh.setDisable(true);
-            accountClient.refreshSubscription().whenComplete((value, error) ->
-                    javafx.application.Platform.runLater(() -> {
-                        refresh.setDisable(false);
-                        update.run();
-                        if (error != null) overall.setText("套餐状态刷新失败：" + rootMessage(error));
-                    }));
-        });
-        login.setOnAction(event -> accountClient.startLogin().whenComplete((value, error) ->
-                javafx.application.Platform.runLater(() -> {
-                    update.run();
-                    if (error != null) overall.setText("登录失败：" + error.getMessage());
-                    else overall.setText("浏览器登录已打开，完成后点击“刷新状态”。");
-                })));
-        logout.setOnAction(event -> accountClient.logout().whenComplete((value, error) ->
+        refresh.setOnAction(event -> subscriptions.refresh().whenComplete((ignored, error) ->
                 javafx.application.Platform.runLater(update)));
-        trial.setOnAction(event -> {
-            trial.setDisable(true);
-            accountClient.claimTrial().whenComplete((value, error) ->
-                    javafx.application.Platform.runLater(() -> {
-                        update.run();
-                        if (error == null) {
-                            overall.setText("14 天 Pro 试用已开通，Link 能力现已可用。");
-                        } else {
-                            overall.setText("试用领取失败：" + rootMessage(error));
-                        }
-                    }));
-        });
-
-        VBox advanced = new VBox(8, new Label("服务地址"), website,
-                new Label("Connector 覆盖路径"), connector,
+        trial.setOnAction(event -> subscriptions.claimTrial(MachineFingerprint.current(),
+                context.accountSession().snapshot().deviceId()).whenComplete((ignored, error) ->
+                javafx.application.Platform.runLater(update)));
+        VBox advanced = new VBox(8, new Label("Connector 覆盖路径"), connector,
                 new Label("身份文件"), identity,
                 new Label("Agent 发布目录覆盖路径"), agents, save);
         advanced.setPadding(new Insets(8));
         TitledPane advancedPane = new TitledPane("高级配置（一般无需修改）", advanced);
         advancedPane.setExpanded(false);
 
-        Label note = new Label("默认配置会自动解包并校验 Connector 与三平台 Agent。登录态、"
-                + "Connector 和所有 SSH Session 由当前 Program 插件统一管理；进入 SSH 会话后按向导安装 Agent。");
+        Label note = new Label("默认配置会自动解包并校验 Connector 与三平台 Agent。账号登录态由 JLShell 宿主统一管理，"
+                + "请先在“账号设置”中通过 Web 登录；进入 SSH 会话后按向导安装 Agent。");
         note.setWrapText(true);
-        HBox accountActions = new HBox(8, login, logout, trial, refresh);
         HBox runtimeActions = new HBox(8, repair);
         VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState, connectorState,
-                accountActions, runtimeActions, note, advancedPane);
+                new HBox(8, trial, refresh), runtimeActions, note, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
         return root;
@@ -416,7 +378,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         boolean runtimeReady = runtime.get("available").getAsBoolean();
         boolean connectorReady = connector.get("available").getAsBoolean();
         boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
-        JsonObject subscription = account.getAsJsonObject("subscription");
+        JsonObject subscription = subscriptions.status();
         String state = !runtimeReady ? "RUNTIME_MISSING"
                 : !connectorReady ? "CONNECTOR_NOT_READY"
                 : !authenticated ? "SIGNED_OUT" : subscription.get("state").getAsString();
@@ -440,7 +402,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         return result;
     }
 
-    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account) {
+    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account,
+                                        JsonObject subscriptionStatus) {
         if (!runtime.get("available").getAsBoolean()) {
             return "需要修复：插件未包含完整运行时。请重新安装正式插件包，或点击重新准备运行时。";
         }
@@ -450,7 +413,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
             return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
         }
-        String subscription = account.getAsJsonObject("subscription").get("state").getAsString();
+        String subscription = subscriptionStatus.get("state").getAsString();
         if (!"READY".equals(subscription)) {
             return switch (subscription) {
                 case "TRIAL_AVAILABLE" -> "当前是 Free 套餐，可领取 14 天 Pro 试用或升级套餐。";

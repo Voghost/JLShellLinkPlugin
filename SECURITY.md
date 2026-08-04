@@ -9,10 +9,11 @@ SFTP 上传 Agent。内置文件解包前后都必须与运行时清单中的大
 停用时终止子进程。Agent 先上传至随机临时路径，远端 SHA-256 与本地一致后才替换正式
 文件，Unix 权限固定为 0700。
 
-桌面授权使用一次性 PKCE S256 授权码和随机 state，回调只能绑定 127.0.0.1。账号 JWT、
-稳定设备 ID 只进入宿主 SecureStorage；Program 能力不会把 JWT 返回给 Session。更换
-Website 地址会立即清除旧站点令牌。Agent 凭据经 SFTP 写入随机临时文件，Unix 上先
-设为 0600 再原子替换，且不会出现在远端命令行。
+桌面授权由 JLShell 宿主使用一次性 PKCE S256 授权码和随机 state 完成，回调只能绑定
+127.0.0.1。账号 JWT、稳定设备 ID 与 Website 地址配置只进入宿主 SecureStorage；插件
+通过受限的宿主账号会话接口取得脱敏状态并调用 Link API，绝不会读取、保存或接收 JWT。
+Agent 凭据经 SFTP 写入随机临时文件，Unix 上先设为 0600 再原子替换，且不会出现在远端
+命令行。
 
 试用机器指纹优先读取 Linux machine-id、macOS IOPlatformUUID 或 Windows MachineGuid，
 只在进程内按 `jlshell-trial-machine-v1` 产品域执行 SHA-256 后上传；原始标识不进入

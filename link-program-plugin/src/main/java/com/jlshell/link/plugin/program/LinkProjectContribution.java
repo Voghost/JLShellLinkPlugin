@@ -85,82 +85,36 @@ final class LinkProjectContribution implements ProjectCreationContribution {
                 + "Session 直接复用 Program 插件登录态，无需再次登录或填写票据。 ");
         guide.setWrapText(true);
 
-        Button login = new Button("登录账号");
-        Button trial = new Button("领取 14 天 Pro 试用");
         Button repair = new Button("修复内置运行时");
         Button refresh = new Button("刷新状态");
-        Runnable refreshStatus = () -> updateStatus(overall, details, login, trial);
-
-        login.setOnAction(event -> account.startLogin().whenComplete((value, error) ->
-                Platform.runLater(() -> {
-                    refreshStatus.run();
-                    if (error != null) overall.setText("登录失败：" + rootMessage(error));
-                    else overall.setText("浏览器登录已打开，完成后点击刷新状态。");
-                })));
+        Runnable refreshStatus = () -> updateStatus(overall, details);
         repair.setOnAction(event -> {
             BundledRuntimeManager.PreparedRuntime prepared = runtime.prepare();
             ConnectorConfiguration.useBundledDefaults(storage);
             connector.configure(ConnectorConfiguration.load(storage, prepared));
             refreshStatus.run();
         });
-        trial.setOnAction(event -> {
-            trial.setDisable(true);
-            account.claimTrial().whenComplete((value, error) -> Platform.runLater(() -> {
-                refreshStatus.run();
-                overall.setText(error == null
-                        ? "状态：14 天 Pro 试用已开通，可安装或连接 Agent"
-                        : "试用领取失败：" + rootMessage(error));
-            }));
-        });
-        refresh.setOnAction(event -> {
-            refresh.setDisable(true);
-            account.refreshSubscription().whenComplete((value, error) -> Platform.runLater(() -> {
-                refresh.setDisable(false);
-                refreshStatus.run();
-                if (error != null) overall.setText("套餐状态刷新失败：" + rootMessage(error));
-            }));
-        });
+        refresh.setOnAction(event -> refreshStatus.run());
         refreshStatus.run();
-        if ("AUTHENTICATED".equals(account.status().get("state").getAsString())) {
-            account.refreshSubscription().whenComplete((value, error) -> Platform.runLater(refreshStatus));
-        }
 
         return new VBox(7, heading, requested, overall, details,
-                new HBox(8, login, trial, repair, refresh), guide);
+                new HBox(8, repair, refresh), guide);
     }
 
-    private void updateStatus(Label overall, Label details, Button login, Button trial) {
+    private void updateStatus(Label overall, Label details) {
         JsonObject runtimeStatus = runtime.status();
         JsonObject connectorStatus = connector.status();
         JsonObject accountStatus = account.status();
         boolean runtimeReady = runtimeStatus.get("available").getAsBoolean();
         boolean connectorReady = connectorStatus.get("available").getAsBoolean();
         boolean signedIn = "AUTHENTICATED".equals(accountStatus.get("state").getAsString());
-        JsonObject subscription = accountStatus.getAsJsonObject("subscription");
-        String access = subscription.get("state").getAsString();
         overall.setText(!runtimeReady ? "状态：需要重新安装或修复完整插件运行时"
                 : !connectorReady ? "状态：Connector 尚未就绪"
-                : !signedIn ? "状态：运行时已就绪，请登录 JLShell 账号"
-                : switch (access) {
-                    case "READY" -> "状态：已就绪，可在项目 SSH 会话中安装或连接 Agent";
-                    case "TRIAL_AVAILABLE" -> "状态：当前套餐不含 Link，可领取 14 天 Pro 试用";
-                    case "UPGRADE_REQUIRED" -> "状态：需要 Plus 或 Pro 套餐";
-                    case "DISABLED_BY_ADMIN" -> "状态：管理员已停用 JLShell Link";
-                    case "VERSION_NOT_SUPPORTED" -> "状态：当前插件版本不在管理员允许范围内";
-                    case "CHECK_FAILED" -> "状态：套餐检查失败，请检查网络或网站服务";
-                    default -> "状态：正在检查套餐与插件策略";
-                });
+                : !signedIn ? "状态：运行时已就绪，请在 JLShell 的账号设置中通过 Web 登录"
+                : "状态：已就绪，可在项目 SSH 会话中安装或连接 Agent");
         details.setText("账号 " + accountStatus.get("state").getAsString()
                 + " · 运行时 " + runtimeStatus.get("state").getAsString()
-                + " · Connector " + connectorStatus.get("state").getAsString()
-                + " · 套餐 " + plan(subscription) + " · 权限 " + access);
-        login.setDisable(signedIn || !connectorReady);
-        trial.setDisable(!signedIn || !"TRIAL_AVAILABLE".equals(access));
-    }
-
-    private static String plan(JsonObject subscription) {
-        return subscription.has("entitlement") && subscription.get("entitlement").isJsonObject()
-                ? subscription.getAsJsonObject("entitlement").get("plan").getAsString() : "未知";
+                + " · Connector " + connectorStatus.get("state").getAsString());
     }
 
     private boolean enabled(String projectId) {
