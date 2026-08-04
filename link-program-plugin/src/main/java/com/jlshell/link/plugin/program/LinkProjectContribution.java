@@ -85,17 +85,9 @@ final class LinkProjectContribution implements ProjectCreationContribution {
                 + "Session 直接复用 Program 插件登录态，无需再次登录或填写票据。 ");
         guide.setWrapText(true);
 
-        Button login = new Button("登录账号");
         Button repair = new Button("修复内置运行时");
         Button refresh = new Button("刷新状态");
-        Runnable refreshStatus = () -> updateStatus(overall, details, login);
-
-        login.setOnAction(event -> account.startLogin().whenComplete((value, error) ->
-                Platform.runLater(() -> {
-                    refreshStatus.run();
-                    if (error != null) overall.setText("登录失败：" + rootMessage(error));
-                    else overall.setText("浏览器登录已打开，完成后点击刷新状态。");
-                })));
+        Runnable refreshStatus = () -> updateStatus(overall, details);
         repair.setOnAction(event -> {
             BundledRuntimeManager.PreparedRuntime prepared = runtime.prepare();
             ConnectorConfiguration.useBundledDefaults(storage);
@@ -106,10 +98,10 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         refreshStatus.run();
 
         return new VBox(7, heading, requested, overall, details,
-                new HBox(8, login, repair, refresh), guide);
+                new HBox(8, repair, refresh), guide);
     }
 
-    private void updateStatus(Label overall, Label details, Button login) {
+    private void updateStatus(Label overall, Label details) {
         JsonObject runtimeStatus = runtime.status();
         JsonObject connectorStatus = connector.status();
         JsonObject accountStatus = account.status();
@@ -118,12 +110,11 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         boolean signedIn = "AUTHENTICATED".equals(accountStatus.get("state").getAsString());
         overall.setText(!runtimeReady ? "状态：需要重新安装或修复完整插件运行时"
                 : !connectorReady ? "状态：Connector 尚未就绪"
-                : !signedIn ? "状态：运行时已就绪，请登录 JLShell 账号"
+                : !signedIn ? "状态：运行时已就绪，请在 JLShell 的账号设置中通过 Web 登录"
                 : "状态：已就绪，可在项目 SSH 会话中安装或连接 Agent");
         details.setText("账号 " + accountStatus.get("state").getAsString()
                 + " · 运行时 " + runtimeStatus.get("state").getAsString()
                 + " · Connector " + connectorStatus.get("state").getAsString());
-        login.setDisable(signedIn || !connectorReady);
     }
 
     private boolean enabled(String projectId) {
