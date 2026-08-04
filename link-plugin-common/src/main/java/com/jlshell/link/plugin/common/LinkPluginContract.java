@@ -11,8 +11,6 @@ public final class LinkPluginContract {
     public static final String PROJECT_AGENT_INTENT_CAPABILITY = "link.project.agent-intent";
     public static final String AGENT_INSTALL_SPEC_CAPABILITY = "link.agent.install-spec";
     public static final String ACCOUNT_STATUS_CAPABILITY = "link.account.status";
-    public static final String ACCOUNT_LOGIN_CAPABILITY = "link.account.login";
-    public static final String ACCOUNT_LOGOUT_CAPABILITY = "link.account.logout";
     public static final String LINK_CATALOG_CAPABILITY = "link.catalog";
     public static final String TICKET_ISSUE_CAPABILITY = "link.ticket.issue";
     public static final String AGENT_CHALLENGE_CAPABILITY = "link.agent.challenge";

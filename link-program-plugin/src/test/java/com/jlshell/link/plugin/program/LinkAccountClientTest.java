@@ -1,16 +1,16 @@
 package com.jlshell.link.plugin.program;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
-import com.jlshell.plugin.api.storage.PluginStorage;
-import com.jlshell.plugin.api.storage.SecureStorage;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.jlshell.program.api.AccountRequest;
+import com.jlshell.program.api.AccountSession;
+import com.jlshell.program.api.AccountSessionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -18,57 +18,63 @@ class LinkAccountClientTest {
     @TempDir Path temporaryDirectory;
 
     @Test
-    void storesStableMachineIdOnlyInSecureStorageAndAllowsLoopbackDevelopment() {
-        MemoryStorage normal = new MemoryStorage();
-        MemorySecrets secure = new MemorySecrets();
+    void exposesOnlyHostSessionMetadataAndNeverStoresAnAccessToken() {
+        FakeHostAccount host = new FakeHostAccount(true);
         try (ConnectorProcessManager connector = new ConnectorProcessManager(
                 new ConnectorConfiguration(null, temporaryDirectory.resolve("identity.key"), null));
-             LinkAccountClient client = new LinkAccountClient(normal, secure, connector)) {
-            client.configureBaseUrl("http://127.0.0.1:8080");
-            String first = client.status().get("deviceId").getAsString();
-            String second = client.status().get("deviceId").getAsString();
-            assertThat(first).isEqualTo(second).startsWith("desktop-");
-            assertThat(normal.values).doesNotContainKey("account.device-id");
-            assertThat(secure.values).containsKey("account.device-id");
+             LinkAccountClient client = new LinkAccountClient(host, connector)) {
+            JsonObject status = client.status();
+
+            assertThat(status.get("state").getAsString()).isEqualTo("AUTHENTICATED");
+            assertThat(status.get("baseUrl").getAsString()).isEqualTo("https://jlshell.oomn.net");
+            assertThat(status.toString()).doesNotContain("token");
+            assertThat(status.getAsJsonObject("account").get("username").getAsString()).isEqualTo("alice");
         }
     }
 
     @Test
-    void rejectsPlaintextRemoteWebsite() {
+    void directsSignedOutUsersToTheHostAccountLogin() {
         try (ConnectorProcessManager connector = new ConnectorProcessManager(
                 new ConnectorConfiguration(null, temporaryDirectory.resolve("identity.key"), null));
-             LinkAccountClient client = new LinkAccountClient(new MemoryStorage(), new MemorySecrets(), connector)) {
-            assertThatThrownBy(() -> client.configureBaseUrl("http://example.com"))
-                    .isInstanceOf(IllegalArgumentException.class);
+             LinkAccountClient client = new LinkAccountClient(new FakeHostAccount(false), connector)) {
+            assertThat(client.status().get("state").getAsString()).isEqualTo("SIGNED_OUT");
+            assertThat(client.authority()).failsWithin(java.time.Duration.ofSeconds(1))
+                    .withThrowableOfType(java.util.concurrent.ExecutionException.class)
+                    .withMessageContaining("账号设置");
         }
     }
 
     @Test
-    void usesProductionWebsiteWithoutUserConfiguration() {
+    void forwardsLinkRequestsThroughTheHostGateway() throws Exception {
+        FakeHostAccount host = new FakeHostAccount(true);
         try (ConnectorProcessManager connector = new ConnectorProcessManager(
                 new ConnectorConfiguration(null, temporaryDirectory.resolve("identity.key"), null));
-             LinkAccountClient client = new LinkAccountClient(new MemoryStorage(), new MemorySecrets(), connector)) {
-            assertThat(client.configuredBaseUrl()).isEqualTo(LinkAccountClient.DEFAULT_BASE_URL);
-            assertThat(client.status().get("baseUrl").getAsString()).isEqualTo(LinkAccountClient.DEFAULT_BASE_URL);
+             LinkAccountClient client = new LinkAccountClient(host, connector)) {
+            client.authority().get();
+
+            assertThat(host.request.get().method()).isEqualTo("GET");
+            assertThat(host.request.get().path()).isEqualTo("/api/v1/link/ticket-authority");
         }
     }
 
-    private static class MemoryStorage implements PluginStorage {
-        final Map<String, String> values = new LinkedHashMap<>();
-        @Override public String get(String key) { return values.get(key); }
-        @Override public void put(String key, String value) { values.put(key, value); }
-        @Override public void remove(String key) { values.remove(key); }
-        @Override public Set<String> keys() { return Set.copyOf(values.keySet()); }
-        @Override public void clear() { values.clear(); }
-    }
+    private static final class FakeHostAccount implements AccountSessionService {
+        private final boolean authenticated;
+        private final AtomicReference<AccountRequest> request = new AtomicReference<>();
 
-    private static final class MemorySecrets implements SecureStorage {
-        final Map<String, byte[]> values = new LinkedHashMap<>();
-        @Override public boolean available() { return true; }
-        @Override public Optional<byte[]> get(String key) { return Optional.ofNullable(values.get(key)); }
-        @Override public void put(String key, byte[] value) { values.put(key, value.clone()); }
-        @Override public void remove(String key) { values.remove(key); }
-        @Override public Set<String> keys() { return Set.copyOf(values.keySet()); }
-        @Override public void clear() { values.clear(); }
+        private FakeHostAccount(boolean authenticated) {
+            this.authenticated = authenticated;
+        }
+
+        @Override public AccountSession snapshot() {
+            return authenticated
+                    ? new AccountSession(true, "https://jlshell.oomn.net", "device-1", "account-1",
+                    "alice", "alice@example.com", "user", "2030-01-01T00:00:00Z")
+                    : AccountSession.signedOut("https://jlshell.oomn.net", "device-1");
+        }
+
+        @Override public CompletableFuture<JsonElement> request(AccountRequest request) {
+            this.request.set(request);
+            return CompletableFuture.completedFuture(new JsonObject());
+        }
     }
 }
