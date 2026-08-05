@@ -19,8 +19,8 @@ import com.jlshell.plugin.api.rpc.CapabilityBus;
 import com.jlshell.plugin.api.rpc.CapabilityRegistry;
 import com.jlshell.plugin.api.rpc.CapabilitySpec;
 import com.jlshell.plugin.api.lifecycle.Registration;
-import com.jlshell.plugin.api.session.ProgramSessionContribution;
-import com.jlshell.plugin.api.session.ProgramSessionIntegration;
+import com.jlshell.plugin.api.connection.ProgramConnectionIntegration;
+import com.jlshell.plugin.api.connection.ProgramConnectionRouteContribution;
 import com.jlshell.plugin.api.storage.PluginStorage;
 import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.ReadOnlyStringProperty;
@@ -54,8 +54,7 @@ class JlShellLinkProgramPluginTest {
         assertThat(result.getAsJsonObject("runtime").get("state").getAsString())
                 .as(result.getAsJsonObject("runtime").toString())
                 .isIn("BUNDLE_MISSING", "READY");
-        assertThat(context.sessionIntegration.contribution).isNotNull();
-        assertThat(context.sessionIntegration.contribution.displayName()).isEqualTo("JLShell Link");
+        assertThat(context.connectionIntegration.contribution).isNotNull();
 
         plugin.deactivate();
         assertThat(registry.resolve(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)).isEmpty();
@@ -83,7 +82,7 @@ class JlShellLinkProgramPluginTest {
 
     private static final class TestProgramContext implements ProgramPluginContext {
         private final TestRegistry capabilityRegistry;
-        private final TestSessionIntegration sessionIntegration = new TestSessionIntegration();
+        private final TestConnectionIntegration connectionIntegration = new TestConnectionIntegration();
 
         private TestProgramContext(TestRegistry capabilityRegistry) {
             this.capabilityRegistry = capabilityRegistry;
@@ -100,15 +99,15 @@ class JlShellLinkProgramPluginTest {
         }
         @Override public CapabilityBus capabilityBus() { return null; }
         @Override public PluginStorage storage() { return null; }
-        @Override public ProgramSessionIntegration sessionIntegration() { return sessionIntegration; }
+        @Override public ProgramConnectionIntegration connectionIntegration() { return connectionIntegration; }
         @Override public String resolveI18n(String key, String fallback) { return fallback; }
         @Override public void showNotification(String message, NotificationLevel level) { }
     }
 
-    private static final class TestSessionIntegration implements ProgramSessionIntegration {
-        private ProgramSessionContribution contribution;
+    private static final class TestConnectionIntegration implements ProgramConnectionIntegration {
+        private ProgramConnectionRouteContribution contribution;
         @Override public boolean available() { return true; }
-        @Override public Registration register(ProgramSessionContribution contribution) {
+        @Override public Registration register(ProgramConnectionRouteContribution contribution) {
             this.contribution = contribution;
             return () -> this.contribution = null;
         }
