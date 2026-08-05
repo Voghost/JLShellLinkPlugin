@@ -12,7 +12,6 @@ import java.util.concurrent.CompletableFuture;
 
 import com.google.gson.JsonObject;
 import com.jlshell.link.plugin.common.LinkPluginContract;
-import com.jlshell.link.plugin.program.session.LinkSessionContribution;
 import com.jlshell.plugin.api.JlShellProgramPlugin;
 import com.jlshell.plugin.api.NotificationLevel;
 import com.jlshell.plugin.api.ProgramPluginContext;
@@ -155,10 +154,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                         saveBinding(args.getAsJsonObject()))).build());
         if (context.projectIntegration().available()) {
             registrations.add(context.projectIntegration().register(new LinkProjectContribution(
-                    context.storage(), accountClient, connectorManager, runtimeManager)));
+                    context.storage(), accountClient, connectorManager, runtimeManager, bindingStore)));
         }
-        if (context.sessionIntegration().available()) {
-            registrations.add(context.sessionIntegration().register(new LinkSessionContribution()));
+        if (context.connectionIntegration().available()) {
+            registrations.add(context.connectionIntegration().register(new LinkConnectionRouteContribution(
+                    bindingStore, accountClient, subscriptions, connectorManager)));
         }
         if (context.hostEvents().available()) {
             registrations.add(context.hostEvents().subscribe(SessionOpenedEvent.class, event -> {
