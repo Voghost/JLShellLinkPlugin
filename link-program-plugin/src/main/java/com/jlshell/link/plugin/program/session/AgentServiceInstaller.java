@@ -39,7 +39,6 @@ final class AgentServiceInstaller {
         List<String> result = new ArrayList<>(List.of(
                 "--identity", directory + "/agent-identity.key",
                 "--authority-public", directory + "/authority.json",
-                "--allow-target", "127.0.0.1:22",
                 "--listen", "/ip4/0.0.0.0/tcp/7001",
                 "--listen", "/ip4/0.0.0.0/udp/7001/quic-v1",
                 "--control-plane-url", baseUrl,

@@ -19,6 +19,7 @@ class AgentServiceInstallerTest {
 
         assertThat(arguments).containsSubsequence("--credential-file",
                 "/home/test/.jlshell-link/bin/agent-token");
+        assertThat(arguments).doesNotContain("--allow-target");
         assertThat(arguments).containsSubsequence("--advertise", "/ip4/203.0.113.10/tcp/7001");
         assertThat(arguments).containsSubsequence("--advertise", "/ip4/203.0.113.10/udp/7001/quic-v1");
         assertThat(arguments).containsSubsequence("--relay-address", "/ip4/198.51.100.20/tcp/4001",
