@@ -35,7 +35,11 @@ jobs:
           sha256sum --check jlshell-link-plugin-runtime-*.tar.gz.sha256
           tar -xzf jlshell-link-plugin-runtime-*.tar.gz -C ../.runtime-bundle
       - name: Test and package
-        run: mvn -B -ntp verify
+        shell: bash
+        run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          mvn -B -ntp versions:set -DnewVersion="$release_version" -DgenerateBackupPoms=false
+          mvn -B -ntp verify
       - name: Require the verified native runtime in the Program plugin
         shell: bash
         run: |

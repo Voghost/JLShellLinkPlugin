@@ -22,7 +22,7 @@ public final class LinkPluginContract {
     public static final String BINDING_GET_CAPABILITY = "link.binding.get";
     public static final String BINDING_SAVE_CAPABILITY = "link.binding.save";
     public static final String VERSION = implementationVersion();
-    public static final String MIN_HOST_VERSION = "0.1.62";
+    public static final String MIN_HOST_VERSION = "0.1.63";
     public static final String PROJECT_AGENT_REQUESTED_STATE = "link.agent.requested";
     public static final String PROJECT_AGENT_BINDING_STATE = "link.agent.binding";
 
