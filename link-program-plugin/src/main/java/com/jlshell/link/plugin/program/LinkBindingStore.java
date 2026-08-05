@@ -9,6 +9,7 @@ import com.jlshell.plugin.api.storage.PluginStorage;
 
 final class LinkBindingStore {
     private static final String PREFIX = "binding.connection.";
+    private static final String PROJECT_PREFIX = "binding.project.";
     private final PluginStorage storage;
 
     LinkBindingStore(PluginStorage storage) {
@@ -51,6 +52,7 @@ final class LinkBindingStore {
 
     void removeProject(String projectId) {
         if (storage == null) return;
+        storage.remove(projectKey(projectId));
         for (String key : storage.keys()) {
             if (!key.startsWith(PREFIX)) continue;
             try {
@@ -62,6 +64,20 @@ final class LinkBindingStore {
             } catch (RuntimeException error) {
                 storage.remove(key);
             }
+        }
+    }
+
+    JsonObject getProject(String projectId) {
+        if (storage == null || projectId == null) return null;
+        return parse(storage.get(projectKey(projectId)));
+    }
+
+    void saveProject(String projectId, JsonObject binding) {
+        if (storage == null || projectId == null) return;
+        if (binding == null) {
+            storage.remove(projectKey(projectId));
+        } else {
+            storage.put(projectKey(projectId), binding.toString());
         }
     }
 
@@ -81,6 +97,20 @@ final class LinkBindingStore {
     private static String key(String connectionId) {
         return PREFIX + Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(connectionId.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String projectKey(String projectId) {
+        return PROJECT_PREFIX + Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(projectId.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static JsonObject parse(String value) {
+        if (value == null) return null;
+        try {
+            return JsonParser.parseString(value).getAsJsonObject();
+        } catch (RuntimeException error) {
+            return null;
+        }
     }
 
     record SessionReference(String projectId, String connectionId) { }
