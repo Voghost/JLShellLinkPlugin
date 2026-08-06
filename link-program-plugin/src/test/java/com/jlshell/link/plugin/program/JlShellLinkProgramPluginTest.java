@@ -38,6 +38,11 @@ class JlShellLinkProgramPluginTest {
     }
 
     @Test
+    void settingsDependenciesAreAbsentBeforeActivation() {
+        assertThat(new JlShellLinkProgramPlugin().settingsDependenciesReady()).isFalse();
+    }
+
+    @Test
     void activationRegistersStatusAndDeactivationRemovesIt() throws Exception {
         TestRegistry registry = new TestRegistry();
         TestProgramContext context = new TestProgramContext(registry);
