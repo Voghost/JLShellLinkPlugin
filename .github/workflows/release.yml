@@ -45,7 +45,9 @@ jobs:
             exit 1
           fi
           mkdir -p runtime-download .runtime-bundle
-          gh release download "$GITHUB_REF_NAME" \
+          runtime_release_tag="${JLSHELL_LINK_RUNTIME_TAG:-v0.1.4}"
+          echo "Using JLShell Link runtime release: $runtime_release_tag"
+          gh release download "$runtime_release_tag" \
             --repo Voghost/JLShellLink \
             --pattern 'jlshell-link-plugin-runtime-*.tar.gz*' \
             --dir runtime-download
