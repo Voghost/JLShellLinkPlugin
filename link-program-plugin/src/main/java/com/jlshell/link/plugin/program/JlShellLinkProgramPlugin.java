@@ -218,11 +218,15 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.BINDING_SAVE_CAPABILITY)) {
             context.capabilityRegistry().unregister(capability);
         }
-        accountClient.close();
+        if (accountClient != null) {
+            accountClient.close();
+        }
         accountClient = null;
         subscriptions = null;
         bindingStore = null;
-        connectorManager.close();
+        if (connectorManager != null) {
+            connectorManager.close();
+        }
         connectorManager = null;
         runtimeManager = null;
         context.info("JLShell Link program plugin deactivated");
@@ -231,6 +235,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
 
     @Override
     public Node settingsView(ProgramPluginContext context) {
+        // Preferences can still enumerate an enabled descriptor after activation failed and
+        // rollback cleared the runtime fields. Settings must remain safe to open in that state.
+        if (!settingsDependenciesReady()) {
+            return unavailableSettingsView();
+        }
         ConnectorConfiguration configuration = ConnectorConfiguration.load(
                 context.storage(), runtimeManager.prepared()).normalized();
         Label title = new Label("JLShell Link");
@@ -312,6 +321,22 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 new HBox(8, trial, refresh), runtimeActions, note, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
+        return root;
+    }
+
+    boolean settingsDependenciesReady() {
+        return runtimeManager != null && connectorManager != null
+                && accountClient != null && subscriptions != null && bindingStore != null;
+    }
+
+    private Node unavailableSettingsView() {
+        Label title = new Label("JLShell Link");
+        Label state = new Label("当前插件未完成激活，运行时状态暂不可用。");
+        state.setWrapText(true);
+        Label guidance = new Label("请先关闭设置窗口并重启 JLShell；如果问题仍然存在，请重新安装完整的 Link 插件发行版并查看日志中的激活失败原因。");
+        guidance.setWrapText(true);
+        VBox root = new VBox(10, title, state, guidance);
+        root.setPadding(new Insets(12));
         return root;
     }
 

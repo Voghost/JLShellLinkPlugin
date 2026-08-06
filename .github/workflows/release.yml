@@ -17,6 +17,24 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Validate release notes
+        shell: bash
+        run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          notes_file=".github/release-notes/${release_version}.md"
+          if [ ! -s "$notes_file" ]; then
+            echo "Missing or empty release notes: $notes_file" >&2
+            echo "Create the file before tagging a release." >&2
+            exit 1
+          fi
+          if ! grep -q '^# ' "$notes_file"; then
+            echo "Release notes must contain a Markdown H1 title: $notes_file" >&2
+            exit 1
+          fi
+          if grep -Eiq 'TODO|TBD|copy[ -]paste|待补充' "$notes_file"; then
+            echo "Release notes contain a placeholder; document the actual changes: $notes_file" >&2
+            exit 1
+          fi
       - name: Download the matching private Link runtime bundle
         shell: bash
         env:
@@ -69,15 +87,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          notes_file=".github/release-notes/${release_version}.md"
           mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No plugin release files were produced" >&2
             exit 1
           fi
-          notes="Single JLShell Link Program plugin with managed SSH session integration."
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes"
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file"
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes"
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file"
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
