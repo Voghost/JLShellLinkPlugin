@@ -21,17 +21,26 @@ import com.jlshell.program.api.AccountSessionService;
 final class LinkAccountClient implements AutoCloseable {
 
     private final AccountSessionService accountSession;
-    private final ConnectorProcessManager connector;
+    private final ConnectorIdentity connector;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "jlshell-link-control-plane");
         thread.setDaemon(true);
         return thread;
     });
-    private volatile String deviceRecordId;
 
     LinkAccountClient(AccountSessionService accountSession, ConnectorProcessManager connector) {
+        this(accountSession, new ConnectorIdentity() {
+            @Override public String peerId() { return connector.peerId(); }
+            @Override public String publicKey() { return connector.publicKey(); }
+            @Override public String signChallenge(String payload) throws Exception {
+                return connector.signChallenge(payload);
+            }
+        });
+    }
+
+    LinkAccountClient(AccountSessionService accountSession, ConnectorIdentity connector) {
         this.accountSession = accountSession == null ? AccountSessionService.unavailable() : accountSession;
-        this.connector = connector;
+        this.connector = java.util.Objects.requireNonNull(connector, "connector");
     }
 
     JsonObject status() {
@@ -153,7 +162,6 @@ final class LinkAccountClient implements AutoCloseable {
     }
 
     private String requireDeviceRecord() throws Exception {
-        if (deviceRecordId != null) return deviceRecordId;
         AccountSession session = accountSession.snapshot();
         if (!session.authenticated() || session.deviceId().isBlank()) {
             throw new IllegalStateException("请先在 JLShell 中登录账号");
@@ -167,7 +175,7 @@ final class LinkAccountClient implements AutoCloseable {
             }
         }
         if (owned == null) throw new IllegalStateException("JLShell 宿主设备记录尚未创建");
-        deviceRecordId = owned.get("id").getAsString();
+        String deviceRecordId = owned.get("id").getAsString();
         if (owned.has("peerId") && !owned.get("peerId").isJsonNull()
                 && connector.peerId().equals(owned.get("peerId").getAsString())) return deviceRecordId;
         JsonObject challengeBody = new JsonObject();
@@ -225,4 +233,10 @@ final class LinkAccountClient implements AutoCloseable {
 
     @FunctionalInterface
     private interface CheckedSupplier { JsonElement get() throws Exception; }
+
+    interface ConnectorIdentity {
+        String peerId();
+        String publicKey();
+        String signChallenge(String payload) throws Exception;
+    }
 }
