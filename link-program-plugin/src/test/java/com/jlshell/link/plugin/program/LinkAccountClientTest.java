@@ -90,6 +90,18 @@ class LinkAccountClientTest {
     }
 
     @Test
+    void acceptsTheWebsiteEncodingOfTheCurrentConnectorPeerIdentity() throws Exception {
+        RecoveringHostAccount host = new RecoveringHostAccount(false);
+        host.identityRegistered.set(true);
+        try (LinkAccountClient client = new LinkAccountClient(host, connectorIdentity())) {
+            client.issueTicket(ticketRequest()).get();
+
+            assertThat(host.identityAttempts).hasValue(0);
+            assertThat(host.ticketRequests).hasValue(1);
+        }
+    }
+
+    @Test
     void catalogDoesNotRequireConnectorIdentityRegistration() throws Exception {
         RecoveringHostAccount host = new RecoveringHostAccount(false);
         try (LinkAccountClient client = new LinkAccountClient(host, connectorIdentity())) {
@@ -101,9 +113,22 @@ class LinkAccountClientTest {
         }
     }
 
+    @Test
+    void catalogNormalizesAgentAndRelayPeerIdsForAllConsumers() throws Exception {
+        RecoveringHostAccount host = new RecoveringHostAccount(false, true);
+        try (LinkAccountClient client = new LinkAccountClient(host, connectorIdentity())) {
+            JsonObject catalog = client.catalog().get().getAsJsonObject();
+
+            assertThat(catalog.getAsJsonArray("agents").get(0).getAsJsonObject()
+                    .get("peerId").getAsString()).isEqualTo(PeerIdCodecTest.LIBP2P_PEER);
+            assertThat(catalog.getAsJsonArray("relays").get(0).getAsJsonObject()
+                    .get("peerId").getAsString()).isEqualTo(PeerIdCodecTest.LIBP2P_PEER);
+        }
+    }
+
     private static LinkAccountClient.ConnectorIdentity connectorIdentity() {
         return new LinkAccountClient.ConnectorIdentity() {
-            @Override public String peerId() { return "connector-peer"; }
+            @Override public String peerId() { return PeerIdCodecTest.LIBP2P_PEER; }
             @Override public String publicKey() { return "connector-public-key"; }
             @Override public String signChallenge(String payload) { return "proof-for-" + payload; }
         };
@@ -140,12 +165,18 @@ class LinkAccountClientTest {
 
     private static final class RecoveringHostAccount implements AccountSessionService {
         private final boolean failFirstIdentityRegistration;
+        private final boolean catalogWithPeers;
         private final AtomicBoolean identityRegistered = new AtomicBoolean();
         private final AtomicInteger identityAttempts = new AtomicInteger();
         private final AtomicInteger ticketRequests = new AtomicInteger();
 
         private RecoveringHostAccount(boolean failFirstIdentityRegistration) {
+            this(failFirstIdentityRegistration, false);
+        }
+
+        private RecoveringHostAccount(boolean failFirstIdentityRegistration, boolean catalogWithPeers) {
             this.failFirstIdentityRegistration = failFirstIdentityRegistration;
+            this.catalogWithPeers = catalogWithPeers;
         }
 
         @Override public AccountSession snapshot() {
@@ -155,9 +186,27 @@ class LinkAccountClientTest {
 
         @Override public CompletableFuture<JsonElement> request(AccountRequest request) {
             if ("GET".equals(request.method()) && "/api/v1/link/agents".equals(request.path())) {
+                if (catalogWithPeers) {
+                    JsonObject agent = new JsonObject();
+                    agent.addProperty("id", "agent-1");
+                    agent.addProperty("peerId", PeerIdCodecTest.WEBSITE_PEER);
+                    JsonArray agents = new JsonArray();
+                    agents.add(agent);
+                    return CompletableFuture.completedFuture(agents);
+                }
+                return CompletableFuture.completedFuture(new JsonArray());
+            }
+            if ("GET".equals(request.method()) && request.path().endsWith("/targets")) {
                 return CompletableFuture.completedFuture(new JsonArray());
             }
             if ("GET".equals(request.method()) && "/api/v1/link/relays".equals(request.path())) {
+                if (catalogWithPeers) {
+                    JsonObject relay = new JsonObject();
+                    relay.addProperty("peerId", PeerIdCodecTest.WEBSITE_PEER);
+                    JsonArray relays = new JsonArray();
+                    relays.add(relay);
+                    return CompletableFuture.completedFuture(relays);
+                }
                 return CompletableFuture.completedFuture(new JsonArray());
             }
             if ("GET".equals(request.method()) && "/api/v1/account/devices".equals(request.path())) {
@@ -165,7 +214,7 @@ class LinkAccountClientTest {
                 device.addProperty("id", "device-record-1");
                 device.addProperty("deviceId", "device-1");
                 if (identityRegistered.get()) {
-                    device.addProperty("peerId", "connector-peer");
+                    device.addProperty("peerId", PeerIdCodecTest.WEBSITE_PEER);
                 } else {
                     device.add("peerId", JsonNull.INSTANCE);
                 }

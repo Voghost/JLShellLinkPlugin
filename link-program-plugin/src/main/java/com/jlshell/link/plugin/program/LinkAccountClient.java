@@ -70,12 +70,15 @@ final class LinkAccountClient implements AutoCloseable {
             for (JsonElement entry : agents) {
                 JsonObject agent = entry.getAsJsonObject();
                 String id = agent.get("id").getAsString();
+                normalizePeerId(agent);
                 agent.add("targets", request("GET", "/api/v1/link/agents/" + encode(id) + "/targets", null)
                         .getAsJsonArray());
             }
+            JsonArray relays = request("GET", "/api/v1/link/relays", null).getAsJsonArray();
+            relays.forEach(entry -> normalizePeerId(entry.getAsJsonObject()));
             JsonObject result = new JsonObject();
             result.add("agents", agents);
-            result.add("relays", request("GET", "/api/v1/link/relays", null));
+            result.add("relays", relays);
             result.addProperty("deviceId", requireDeviceRecord().get("id").getAsString());
             return result;
         });
@@ -182,7 +185,7 @@ final class LinkAccountClient implements AutoCloseable {
         JsonObject owned = requireDeviceRecord();
         String deviceRecordId = owned.get("id").getAsString();
         if (owned.has("peerId") && !owned.get("peerId").isJsonNull()
-                && connector.peerId().equals(owned.get("peerId").getAsString())) return deviceRecordId;
+                && connector.peerId().equals(peerId(owned.get("peerId").getAsString()))) return deviceRecordId;
         JsonObject challengeBody = new JsonObject();
         challengeBody.addProperty("purpose", "DEVICE");
         challengeBody.addProperty("publicKey", connector.publicKey());
@@ -193,6 +196,20 @@ final class LinkAccountClient implements AutoCloseable {
         proof.addProperty("proofSignature", connector.signChallenge(challenge.get("payload").getAsString()));
         request("PUT", "/api/v1/link/devices/" + encode(deviceRecordId) + "/identity", proof);
         return deviceRecordId;
+    }
+
+    private static String peerId(String value) {
+        try {
+            return PeerIdCodec.toBase58(value);
+        } catch (IllegalArgumentException error) {
+            return "";
+        }
+    }
+
+    private static void normalizePeerId(JsonObject value) {
+        if (!value.has("peerId") || value.get("peerId").isJsonNull()) return;
+        String normalized = peerId(value.get("peerId").getAsString());
+        if (!normalized.isEmpty()) value.addProperty("peerId", normalized);
     }
 
     private CompletableFuture<JsonElement> authenticated(CheckedSupplier action) {

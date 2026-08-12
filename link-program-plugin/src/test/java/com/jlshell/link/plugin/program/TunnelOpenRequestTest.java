@@ -22,6 +22,19 @@ class TunnelOpenRequestTest {
     }
 
     @Test
+    void normalizesWebsiteAgentAndRelayPeerIdsForTheConnector() {
+        JsonObject args = validArgs();
+        args.addProperty("agentPeer", PeerIdCodecTest.WEBSITE_PEER);
+        args.addProperty("relayAddress", "/ip4/127.0.0.1/tcp/7000");
+        args.addProperty("relayPeer", PeerIdCodecTest.WEBSITE_PEER);
+
+        TunnelOpenRequest request = TunnelOpenRequest.parse(args);
+
+        assertThat(request.agentPeer()).isEqualTo(PeerIdCodecTest.LIBP2P_PEER);
+        assertThat(request.relayPeer()).isEqualTo(PeerIdCodecTest.LIBP2P_PEER);
+    }
+
+    @Test
     void rejectsDnsTargetsAndIncompleteRelayConfiguration() {
         JsonObject dns = validArgs();
         dns.addProperty("targetIp", "ssh.internal.example");
@@ -38,7 +51,7 @@ class TunnelOpenRequestTest {
 
     static JsonObject validArgs() {
         JsonObject args = new JsonObject();
-        args.addProperty("agentPeer", "12D3KooWAbcdefghijkmnopqrstuvwxyz123456789");
+        args.addProperty("agentPeer", PeerIdCodecTest.LIBP2P_PEER);
         var addresses = new com.google.gson.JsonArray();
         addresses.add("/ip4/127.0.0.1/tcp/7001");
         args.add("agentAddresses", addresses);
