@@ -87,10 +87,11 @@ record TunnelOpenRequest(String agentPeer, List<String> agentAddresses, String r
     }
 
     private static String peer(String value, String name) {
-        if (value.length() > 160 || !value.matches("[1-9A-HJ-NP-Za-km-z]+")) {
+        try {
+            return PeerIdCodec.toBase58(value);
+        } catch (IllegalArgumentException error) {
             throw new IllegalArgumentException(name + " is not a valid PeerId encoding");
         }
-        return value;
     }
 
     private static String multiaddr(String value, String name) {
