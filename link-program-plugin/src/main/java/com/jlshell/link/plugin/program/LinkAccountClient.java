@@ -76,7 +76,7 @@ final class LinkAccountClient implements AutoCloseable {
             JsonObject result = new JsonObject();
             result.add("agents", agents);
             result.add("relays", request("GET", "/api/v1/link/relays", null));
-            result.addProperty("deviceId", requireDeviceRecord());
+            result.addProperty("deviceId", requireDeviceRecord().get("id").getAsString());
             return result;
         });
     }
@@ -85,7 +85,7 @@ final class LinkAccountClient implements AutoCloseable {
         return authenticated(() -> {
             JsonObject input = object(args);
             JsonObject body = new JsonObject();
-            body.addProperty("deviceId", requireDeviceRecord());
+            body.addProperty("deviceId", requireDeviceIdentity());
             body.addProperty("agentId", required(input, "agentId"));
             body.addProperty("targetIp", required(input, "targetIp"));
             body.addProperty("targetPort", requiredInt(input, "targetPort"));
@@ -161,7 +161,7 @@ final class LinkAccountClient implements AutoCloseable {
         return accountSession.request(new AccountRequest(method, path, body)).get();
     }
 
-    private String requireDeviceRecord() throws Exception {
+    private JsonObject requireDeviceRecord() throws Exception {
         AccountSession session = accountSession.snapshot();
         if (!session.authenticated() || session.deviceId().isBlank()) {
             throw new IllegalStateException("请先在 JLShell 中登录账号");
@@ -175,6 +175,11 @@ final class LinkAccountClient implements AutoCloseable {
             }
         }
         if (owned == null) throw new IllegalStateException("JLShell 宿主设备记录尚未创建");
+        return owned;
+    }
+
+    private String requireDeviceIdentity() throws Exception {
+        JsonObject owned = requireDeviceRecord();
         String deviceRecordId = owned.get("id").getAsString();
         if (owned.has("peerId") && !owned.get("peerId").isJsonNull()
                 && connector.peerId().equals(owned.get("peerId").getAsString())) return deviceRecordId;

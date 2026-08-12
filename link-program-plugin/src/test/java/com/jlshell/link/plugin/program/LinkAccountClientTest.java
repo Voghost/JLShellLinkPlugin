@@ -89,6 +89,18 @@ class LinkAccountClientTest {
         }
     }
 
+    @Test
+    void catalogDoesNotRequireConnectorIdentityRegistration() throws Exception {
+        RecoveringHostAccount host = new RecoveringHostAccount(false);
+        try (LinkAccountClient client = new LinkAccountClient(host, connectorIdentity())) {
+            JsonObject catalog = client.catalog().get().getAsJsonObject();
+
+            assertThat(catalog.getAsJsonArray("agents")).isEmpty();
+            assertThat(catalog.get("deviceId").getAsString()).isEqualTo("device-record-1");
+            assertThat(host.identityAttempts).hasValue(0);
+        }
+    }
+
     private static LinkAccountClient.ConnectorIdentity connectorIdentity() {
         return new LinkAccountClient.ConnectorIdentity() {
             @Override public String peerId() { return "connector-peer"; }
@@ -142,6 +154,12 @@ class LinkAccountClientTest {
         }
 
         @Override public CompletableFuture<JsonElement> request(AccountRequest request) {
+            if ("GET".equals(request.method()) && "/api/v1/link/agents".equals(request.path())) {
+                return CompletableFuture.completedFuture(new JsonArray());
+            }
+            if ("GET".equals(request.method()) && "/api/v1/link/relays".equals(request.path())) {
+                return CompletableFuture.completedFuture(new JsonArray());
+            }
             if ("GET".equals(request.method()) && "/api/v1/account/devices".equals(request.path())) {
                 JsonObject device = new JsonObject();
                 device.addProperty("id", "device-record-1");
