@@ -26,6 +26,7 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TitledPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
@@ -36,6 +37,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     private ProgramPluginContext context;
     private ConnectorProcessManager connectorManager;
     private LinkAccountClient accountClient;
+    private LinkV2AccountClient v2AccountClient;
     private LinkSubscriptionService subscriptions;
     private BundledRuntimeManager runtimeManager;
     private final List<Registration> registrations = new ArrayList<>();
@@ -80,6 +82,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         connectorManager = new ConnectorProcessManager(
                 ConnectorConfiguration.load(context.storage(), bundled));
         accountClient = new LinkAccountClient(context.accountSession(), connectorManager);
+        v2AccountClient = new LinkV2AccountClient(context.accountSession());
         subscriptions = new LinkSubscriptionService(context.accountSession());
         bindingStore = new LinkBindingStore(context.storage());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
@@ -132,6 +135,14 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
                 .description("List owned Agents, targets and available Relays without exposing the account token.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_V2_CAPABILITY)
+                .description("List Java Link Agents registered to the current host account.")
+                .requiresSession(false).handler((args, capabilityContext) -> v2AccountClient.agents()
+                        .thenApply(agents -> {
+                            JsonObject catalog = new JsonObject();
+                            catalog.add("agents", agents);
+                            return catalog;
+                        })).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TICKET_ISSUE_CAPABILITY)
                 .description("Issue a one-stream signed ticket for the registered Connector identity.")
                 .requiresSession(false).handler((args, capabilityContext) -> accountClient.issueTicket(args)).build());
@@ -210,6 +221,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY,
                 LinkPluginContract.TRIAL_CLAIM_CAPABILITY,
                 LinkPluginContract.LINK_CATALOG_CAPABILITY,
+                LinkPluginContract.LINK_CATALOG_V2_CAPABILITY,
                 LinkPluginContract.TICKET_ISSUE_CAPABILITY,
                 LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
                 LinkPluginContract.AGENT_REGISTER_CAPABILITY,
@@ -222,6 +234,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             accountClient.close();
         }
         accountClient = null;
+        v2AccountClient = null;
         subscriptions = null;
         bindingStore = null;
         if (connectorManager != null) {
@@ -254,6 +267,16 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Button refresh = new Button("刷新状态");
         Button trial = new Button("领取 14 天 Pro 试用");
         Button repair = new Button("重新准备内置运行时");
+        TextField gatewayName = new TextField();
+        gatewayName.setPromptText("新网关名称");
+        Button addGateway = new Button("添加 Java 网关");
+        TextArea enrollment = new TextArea();
+        enrollment.setEditable(false);
+        enrollment.setWrapText(true);
+        enrollment.setVisible(false);
+        enrollment.setManaged(false);
+        Label enrollmentState = new Label("无需先打开到网关的 SSH 会话。生成一次性注册令牌后，按网站安装指引部署 Java Agent。");
+        enrollmentState.setWrapText(true);
 
         TextField connector = new TextField(text(configuration.connectorBinary()));
         connector.setPromptText("默认自动使用插件内置 Connector");
@@ -306,6 +329,26 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         trial.setOnAction(event -> subscriptions.claimTrial(MachineFingerprint.current(),
                 context.accountSession().snapshot().deviceId()).whenComplete((ignored, error) ->
                 javafx.application.Platform.runLater(update)));
+        addGateway.setOnAction(event -> {
+            String requestedName = gatewayName.getText();
+            addGateway.setDisable(true);
+            enrollment.clear();
+            enrollment.setVisible(false);
+            enrollment.setManaged(false);
+            subscriptions.requireProgram("link.agent-deploy")
+                    .thenCompose(ignored -> v2AccountClient.createEnrollment(requestedName))
+                    .whenComplete((created, error) -> javafx.application.Platform.runLater(() -> {
+                        addGateway.setDisable(false);
+                        if (error != null) {
+                            enrollmentState.setText("创建网关注册令牌失败：" + rootMessage(error));
+                            return;
+                        }
+                        enrollmentState.setText("一次性注册令牌仅在这里显示，请按网站的 Java Agent 安装指引使用。");
+                        enrollment.setText(created.get("enrollmentToken").getAsString());
+                        enrollment.setVisible(true);
+                        enrollment.setManaged(true);
+                    }));
+        });
         VBox advanced = new VBox(8, new Label("Connector 覆盖路径"), connector,
                 new Label("身份文件"), identity,
                 new Label("Agent 发布目录覆盖路径"), agents, save);
@@ -318,7 +361,9 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         note.setWrapText(true);
         HBox runtimeActions = new HBox(8, repair);
         VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState, connectorState,
-                new HBox(8, trial, refresh), runtimeActions, note, advancedPane);
+                new HBox(8, trial, refresh), runtimeActions, note,
+                new Label("添加 Java 网关"), new HBox(8, gatewayName, addGateway), enrollmentState,
+                enrollment, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
         return root;
@@ -326,7 +371,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
 
     boolean settingsDependenciesReady() {
         return runtimeManager != null && connectorManager != null
-                && accountClient != null && subscriptions != null && bindingStore != null;
+                && accountClient != null && v2AccountClient != null
+                && subscriptions != null && bindingStore != null;
     }
 
     private Node unavailableSettingsView() {
