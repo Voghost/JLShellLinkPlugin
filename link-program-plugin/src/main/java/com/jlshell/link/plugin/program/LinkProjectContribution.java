@@ -2,6 +2,8 @@ package com.jlshell.link.plugin.program;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import com.google.gson.JsonElement;
@@ -94,6 +96,8 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         targets.setDisable(!initiallyEnabled);
         Button refresh = new Button("刷新 Agent 列表");
         Button repair = new Button("修复内置运行时");
+        AtomicBoolean updatingCatalog = new AtomicBoolean();
+        AtomicReference<JsonObject> currentBinding = new AtomicReference<>(initialBinding);
 
         Runnable refreshStatus = () -> updateStatus(overall);
         Runnable loadCatalog = () -> {
@@ -108,24 +112,36 @@ final class LinkProjectContribution implements ProjectCreationContribution {
                     return;
                 }
                 List<ProjectTarget> values = targets(catalog.getAsJsonObject());
-                targets.getItems().setAll(values);
-                ProjectTarget selected = matching(values, initialBinding);
-                if (selected == null && !values.isEmpty()) selected = values.getFirst();
-                targets.setValue(selected);
-                selection.setText(values.isEmpty()
-                        ? "账号下没有在线 Agent。请前往 Website 创建注册令牌并完成服务器安装。"
-                        : "请选择此项目要使用的 Agent。实际 SSH 主机与端口必须已在 Website 为该 Agent 精确授权。");
+                ProjectTarget selected = matching(values, currentBinding.get());
+                updatingCatalog.set(true);
+                try {
+                    targets.getItems().setAll(values);
+                    targets.setValue(selected);
+                } finally {
+                    updatingCatalog.set(false);
+                }
+                selection.setText(currentBinding.get() != null && selected == null
+                        ? "原项目绑定的 Agent 当前不在可用目录中；已保留原绑定。请核对网关后明确选择，不能自动改绑到另一台设备。"
+                        : values.isEmpty()
+                                ? "账号下没有在线 Agent。请前往 Website 创建注册令牌并完成服务器安装。"
+                                : "请选择此项目要使用的 Agent。实际 SSH 主机与端口必须已在 Website 为该 Agent 精确授权。");
             }));
         };
 
         enabled.selectedProperty().addListener((observable, oldValue, value) -> {
             enabledUpdate.accept(value);
             targets.setDisable(!value);
-            if (!value) bindingUpdate.accept(null);
+            if (!value) {
+                currentBinding.set(null);
+                bindingUpdate.accept(null);
+            }
             else if (targets.getValue() != null) bindingUpdate.accept(targets.getValue().json());
         });
         targets.valueProperty().addListener((observable, oldValue, value) -> {
-            if (enabled.isSelected()) bindingUpdate.accept(value == null ? null : value.json());
+            if (enabled.isSelected() && !updatingCatalog.get() && value != null) {
+                currentBinding.set(value.binding());
+                bindingUpdate.accept(value.json());
+            }
         });
         refresh.setOnAction(event -> loadCatalog.run());
         repair.setOnAction(event -> {
@@ -203,10 +219,13 @@ final class LinkProjectContribution implements ProjectCreationContribution {
     }
 
     private record ProjectTarget(String agentId, String agentName) {
-        String json() {
+        JsonObject binding() {
             JsonObject value = new JsonObject();
             value.addProperty("agentId", agentId);
-            return value.toString();
+            return value;
+        }
+        String json() {
+            return binding().toString();
         }
         @Override public String toString() { return agentName; }
     }
