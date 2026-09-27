@@ -446,6 +446,12 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         result.addProperty("available", runtime.get("available").getAsBoolean() && "READY".equals(state));
         result.addProperty("state", state);
         result.addProperty("nextAction", nextAction);
+        result.addProperty("version", LinkPluginContract.VERSION);
+        result.add("runtime", runtime.deepCopy());
+        JsonObject retiredConnector = new JsonObject();
+        retiredConnector.addProperty("available", false);
+        retiredConnector.addProperty("state", "REPLACED_BY_JAVA_CLIENT");
+        result.add("connector", retiredConnector);
         result.add("javaClient", runtime.deepCopy());
         result.add("account", account.deepCopy());
         result.add("subscription", subscription.deepCopy());
