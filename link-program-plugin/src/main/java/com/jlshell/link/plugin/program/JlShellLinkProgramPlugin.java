@@ -219,7 +219,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         enrollment.setWrapText(true);
         enrollment.setVisible(false);
         enrollment.setManaged(false);
-        Label enrollmentState = new Label("无需先打开到网关的 SSH 会话。生成一次性注册令牌后，按网站安装指引部署 Java Agent。");
+        Label enrollmentState = new Label("无需先打开到网关的 SSH 会话。先生成一次性注册信息，再按网站安装指引部署 Java Agent。");
         enrollmentState.setWrapText(true);
         TextField relayUri = new TextField(LinkClientSettings.relayUri(context.storage()));
         relayUri.setPromptText(LinkClientSettings.DEFAULT_RELAY_URI);
@@ -294,8 +294,17 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                             enrollmentState.setText("创建网关注册令牌失败：" + rootMessage(error));
                             return;
                         }
-                        enrollmentState.setText("一次性注册令牌仅在这里显示，请按网站的 Java Agent 安装指引使用。");
-                        enrollment.setText(created.get("enrollmentToken").getAsString());
+                        String agentId = created.has("agentId") && !created.get("agentId").isJsonNull()
+                                ? created.get("agentId").getAsString() : "";
+                        String enrollmentToken = created.has("enrollmentToken")
+                                && !created.get("enrollmentToken").isJsonNull()
+                                ? created.get("enrollmentToken").getAsString() : "";
+                        if (agentId.isBlank() || enrollmentToken.isBlank()) {
+                            enrollmentState.setText("Website 返回的注册信息不完整，请刷新后重试。");
+                            return;
+                        }
+                        enrollmentState.setText("Agent ID 与一次性令牌仅在这里显示。安装时需要两项；令牌只显示一次，关闭窗口后无法再次读取。");
+                        enrollment.setText("Agent ID：" + agentId + "\n一次性注册令牌：\n" + enrollmentToken);
                         enrollment.setVisible(true);
                         enrollment.setManaged(true);
                     }));
