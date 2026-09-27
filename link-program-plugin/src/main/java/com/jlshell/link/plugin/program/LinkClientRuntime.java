@@ -1,17 +1,20 @@
 package com.jlshell.link.plugin.program;
 
 import com.google.gson.JsonObject;
+import com.jlshell.link.client.ClientControlSignalClient;
+import com.jlshell.link.client.ClientIceSignalBroker;
 import com.jlshell.link.client.ClientTlsIdentity;
 import com.jlshell.link.client.ConnectionCoordinator;
+import com.jlshell.link.client.IceKcpCarrierPlanFactory;
 import com.jlshell.link.client.LinkClientEngine;
 import com.jlshell.link.client.RelayCarrierPlanFactory;
+import com.jlshell.link.client.SignaledIceDirectPathProvider;
 import com.jlshell.link.client.WebsiteAccessRequestProvider;
 import com.jlshell.link.core.ProtocolVersion;
 import com.jlshell.link.core.identity.Ed25519NodeKey;
 import com.jlshell.link.core.identity.NodeKeyStore;
 import com.jlshell.link.core.identity.NodeProofService;
 import com.jlshell.link.core.identity.SecureSecretStore;
-import com.jlshell.link.core.model.ConnectPolicy;
 import com.jlshell.link.core.model.TargetEndpoint;
 import com.jlshell.link.core.transport.TransportBudget;
 import com.jlshell.link.transport.RelayProofClient;
@@ -21,6 +24,7 @@ import com.jlshell.plugin.api.storage.SecureStorage;
 import com.jlshell.program.api.AccountSession;
 import com.jlshell.program.api.AccountSessionService;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -28,8 +32,12 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.net.NetworkInterface;
+import java.util.Enumeration;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -37,6 +45,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Optional;
@@ -46,6 +55,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -113,7 +124,8 @@ final class LinkClientRuntime implements AutoCloseable {
                 return;
             }
             CompletableFuture<LinkClientEngine.LocalTunnelLease> connecting = runtime.engine.openTunnel(
-                    new LinkClientEngine.TunnelRequest(runtime.scope, gateway, target, ConnectPolicy.RELAY_ONLY))
+                    new LinkClientEngine.TunnelRequest(runtime.scope, gateway, target,
+                            LinkClientSettings.connectPolicy(pluginStorage)))
                     .toCompletableFuture();
             attempt.set(connecting);
             if (result.isCancelled()) connecting.cancel(true);
@@ -194,6 +206,7 @@ final class LinkClientRuntime implements AutoCloseable {
         result.addProperty("lastFailureCategory", diagnostic == null
                 ? null : diagnostic.failureCategory().map(Enum::name).orElse(null));
         result.addProperty("lastPathElapsedMillis", diagnostic == null ? 0 : diagnostic.elapsed().toMillis());
+        result.addProperty("controlSignalState", active == null ? "STOPPED" : active.controlSignals.state());
         return result;
     }
 
@@ -303,24 +316,49 @@ final class LinkClientRuntime implements AutoCloseable {
         TransportBudget budget = new TransportBudget(65_536, 8_192, 32, 1_048_576,
                 131_072, 4_194_304, 8, Duration.ofSeconds(20));
         EventLoopGroup eventLoops = new NioEventLoopGroup(2, daemonFactory("jlshell-link-netty"));
+        EventLoopGroup localChannelLoops = new DefaultEventLoopGroup(2, daemonFactory("jlshell-link-local"));
         RelayProofClient proof = new RelayProofClient(RELAY_CONNECT_TIMEOUT, RELAY_REQUEST_TIMEOUT,
                 new NodeProofService(), worker);
+        ClientControlSignalClient controlSignals = null;
         try {
             SSLContext outerTls = SSLContext.getDefault();
-            RelayCarrierPlanFactory plans = new RelayCarrierPlanFactory(eventLoops, relayUri,
-                    deviceRecordId, identity.nodeKey(), credential, outerTls,
-                    identity.tlsIdentity()::forAgent, budget,
-                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()), proof);
             WebsiteAccessRequestProvider access = new WebsiteAccessRequestProvider(websiteOrigin,
                     CONTROL_CONNECT_TIMEOUT, CONTROL_REQUEST_TIMEOUT, credential, worker);
+            RelayCarrierPlanFactory relayPlans = new RelayCarrierPlanFactory(eventLoops, relayUri,
+                    deviceRecordId, identity.nodeKey(), credential, outerTls,
+                    identity.tlsIdentity()::forAgent, budget,
+                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()), proof, access::activateRelay);
+            ClientIceSignalBroker signalBroker = new ClientIceSignalBroker();
+            controlSignals = new ClientControlSignalClient(controlUri(websiteOrigin), deviceRecordId,
+                    identity.nodeKey(), credential, outerTls, signalBroker, null);
+            SignaledIceDirectPathProvider directPaths = new SignaledIceDirectPathProvider(
+                    signalBroker, worker, LinkClientSettings.iceConfig(pluginStorage));
+            IceKcpCarrierPlanFactory plans = new IceKcpCarrierPlanFactory(relayPlans, directPaths,
+                    localChannelLoops, budget, deviceRecordId, identity.nodeKey(),
+                    identity.tlsIdentity()::forAgent, "jlshell-agent.invalid",
+                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()), access::releaseUnusedRelay);
             LinkClientEngine engine = new LinkClientEngine(scope, currentScope, access, plans,
                     new ConnectionCoordinator.Config(Duration.ofSeconds(5), Duration.ofSeconds(15), 16),
                     lastPathAttempt::set, 16, Duration.ofSeconds(90));
-            return new EngineContext(scope, initial, engine, proof, eventLoops);
+            EngineContext created = new EngineContext(scope, initial, engine, proof, eventLoops,
+                    localChannelLoops, controlSignals);
+            controlSignals.connect();
+            return created;
         } catch (Exception error) {
+            if (controlSignals != null) controlSignals.close();
             proof.close();
             eventLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
+            localChannelLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
             throw new java.util.concurrent.CompletionException(error);
+        }
+    }
+
+    private static URI controlUri(URI websiteOrigin) {
+        try {
+            return new URI("wss", null, websiteOrigin.getHost(), websiteOrigin.getPort(),
+                    "/link/v2/control", null, null);
+        } catch (java.net.URISyntaxException invalid) {
+            throw new IllegalArgumentException("Website control endpoint is invalid", invalid);
         }
     }
 
@@ -433,15 +471,35 @@ final class LinkClientRuntime implements AutoCloseable {
         private final LinkClientEngine engine;
         private final RelayProofClient proof;
         private final EventLoopGroup eventLoops;
+        private final EventLoopGroup localChannelLoops;
+        private final ClientControlSignalClient controlSignals;
+        private final ScheduledExecutorService networkWatcher;
+        private volatile String networkFingerprint;
         private final AtomicBoolean contextClosed = new AtomicBoolean();
 
         private EngineContext(LinkClientEngine.Scope scope, AccountSession session,
-                LinkClientEngine engine, RelayProofClient proof, EventLoopGroup eventLoops) {
+                LinkClientEngine engine, RelayProofClient proof, EventLoopGroup eventLoops,
+                EventLoopGroup localChannelLoops, ClientControlSignalClient controlSignals) {
             this.scope = scope;
             this.session = session;
             this.engine = engine;
             this.proof = proof;
             this.eventLoops = eventLoops;
+            this.localChannelLoops = localChannelLoops;
+            this.controlSignals = controlSignals;
+            this.networkFingerprint = networkFingerprint();
+            this.networkWatcher = Executors.newSingleThreadScheduledExecutor(
+                    daemonFactory("jlshell-link-network-watch"));
+            networkWatcher.scheduleWithFixedDelay(this::checkNetwork, 5, 5, TimeUnit.SECONDS);
+        }
+
+        private void checkNetwork() {
+            if (contextClosed.get()) return;
+            String current = networkFingerprint();
+            if (current == null) return;
+            String previous = networkFingerprint;
+            networkFingerprint = current;
+            if (previous != null && !previous.equals(current)) engine.networkChanged();
         }
 
         private boolean isCurrent(AccountSessionService currentSessions) {
@@ -451,9 +509,39 @@ final class LinkClientRuntime implements AutoCloseable {
 
         @Override public void close() {
             if (!contextClosed.compareAndSet(false, true)) return;
+            networkWatcher.shutdownNow();
             engine.close();
+            controlSignals.close();
             proof.close();
             eventLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
+            localChannelLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    /** Hashes local interface state in memory; raw interface addresses are never logged or persisted. */
+    private static String networkFingerprint() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces == null) return null;
+            java.util.ArrayList<String> state = new java.util.ArrayList<>();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface network = interfaces.nextElement();
+                StringBuilder entry = new StringBuilder().append(network.getIndex()).append(':')
+                        .append(network.isUp()).append(':').append(network.isLoopback());
+                java.util.ArrayList<String> addresses = new java.util.ArrayList<>();
+                for (var address : network.getInterfaceAddresses()) {
+                    byte[] bytes = address.getAddress().getAddress();
+                    addresses.add(HexFormat.of().formatHex(bytes) + "/" + address.getNetworkPrefixLength());
+                }
+                addresses.sort(Comparator.naturalOrder());
+                entry.append(':').append(String.join(",", addresses));
+                state.add(entry.toString());
+            }
+            state.sort(Comparator.naturalOrder());
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
+                    String.join("\n", state).getBytes(StandardCharsets.UTF_8)));
+        } catch (IOException | NoSuchAlgorithmException unavailable) {
+            return null;
         }
     }
 
