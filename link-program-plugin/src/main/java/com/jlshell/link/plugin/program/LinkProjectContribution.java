@@ -1,14 +1,10 @@
 package com.jlshell.link.plugin.program;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.jlshell.link.core.ProtocolVersion;
 import com.jlshell.link.plugin.common.LinkPluginContract;
 import com.jlshell.plugin.api.event.ProjectCreatedEvent;
 import com.jlshell.plugin.api.event.ProjectUpdatedEvent;
@@ -16,6 +12,12 @@ import com.jlshell.plugin.api.project.ProjectCreationContext;
 import com.jlshell.plugin.api.project.ProjectCreationContribution;
 import com.jlshell.plugin.api.project.ProjectManagementContext;
 import com.jlshell.plugin.api.storage.PluginStorage;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import javafx.application.Platform;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -25,28 +27,28 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
-/** 将项目绑定到 Website 中已经注册并在线的 Agent 与精确目标。 */
+/** 将项目绑定到 Website 中已经注册并在线的 Java Link Agent。 */
 final class LinkProjectContribution implements ProjectCreationContribution {
 
     private final PluginStorage storage;
-    private final LinkAccountClient account;
-    private final ConnectorProcessManager connector;
-    private final BundledRuntimeManager runtime;
+    private final LinkV2AccountClient account;
+    private final LinkSubscriptionService subscriptions;
+    private final LinkClientRuntime client;
     private final LinkBindingStore bindings;
 
-    LinkProjectContribution(PluginStorage storage, LinkAccountClient account,
-                            ConnectorProcessManager connector, BundledRuntimeManager runtime,
-                            LinkBindingStore bindings) {
+    LinkProjectContribution(PluginStorage storage, LinkV2AccountClient account,
+            LinkSubscriptionService subscriptions, LinkClientRuntime client, LinkBindingStore bindings) {
         this.storage = storage;
         this.account = account;
-        this.connector = connector;
-        this.runtime = runtime;
+        this.subscriptions = subscriptions;
+        this.client = client;
         this.bindings = bindings;
     }
 
-    LinkProjectContribution(PluginStorage storage, LinkAccountClient account,
-                            ConnectorProcessManager connector, BundledRuntimeManager runtime) {
-        this(storage, account, connector, runtime, new LinkBindingStore(storage));
+    /** Keeps project-state persistence usable by older callers and storage-focused tests. */
+    LinkProjectContribution(PluginStorage storage, Object ignoredLegacyAccount,
+            Object ignoredLegacyConnector, Object ignoredLegacyRuntime) {
+        this(storage, (LinkV2AccountClient) null, null, null, new LinkBindingStore(storage));
     }
 
     @Override public String id() { return "jlshell-link-agent"; }
@@ -56,8 +58,9 @@ final class LinkProjectContribution implements ProjectCreationContribution {
     public Node createView(ProjectCreationContext context) {
         context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE, "false");
         context.putState(LinkPluginContract.PROJECT_AGENT_BINDING_STATE, null);
-        return view(null, false, null,
-                value -> context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE, Boolean.toString(value)),
+        return view(false, null,
+                value -> context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE,
+                        Boolean.toString(value)),
                 value -> context.putState(LinkPluginContract.PROJECT_AGENT_BINDING_STATE, value));
     }
 
@@ -66,9 +69,11 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         boolean enabled = enabled(context.projectId());
         JsonObject binding = bindings.getProject(context.projectId());
         context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE, Boolean.toString(enabled));
-        context.putState(LinkPluginContract.PROJECT_AGENT_BINDING_STATE, binding == null ? null : binding.toString());
-        return view(context.projectId(), enabled, binding,
-                value -> context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE, Boolean.toString(value)),
+        context.putState(LinkPluginContract.PROJECT_AGENT_BINDING_STATE,
+                binding == null ? null : binding.toString());
+        return view(enabled, binding,
+                value -> context.putState(LinkPluginContract.PROJECT_AGENT_REQUESTED_STATE,
+                        Boolean.toString(value)),
                 value -> context.putState(LinkPluginContract.PROJECT_AGENT_BINDING_STATE, value));
     }
 
@@ -84,34 +89,34 @@ final class LinkProjectContribution implements ProjectCreationContribution {
                 context.state(LinkPluginContract.PROJECT_AGENT_BINDING_STATE));
     }
 
-    private Node view(String projectId, boolean initiallyEnabled, JsonObject initialBinding,
-                      Consumer<Boolean> enabledUpdate, Consumer<String> bindingUpdate) {
+    private Node view(boolean initiallyEnabled, JsonObject initialBinding,
+            Consumer<Boolean> enabledUpdate, Consumer<String> bindingUpdate) {
         Label heading = new Label("JLShell Link 网络访问");
-        CheckBox enabled = new CheckBox("通过已配置的 Link Agent 访问此项目的内网服务");
+        CheckBox enabled = new CheckBox("通过 Java Link Agent 访问此项目的内网服务");
         enabled.setSelected(initiallyEnabled);
-        Label overall = new Label(); overall.setWrapText(true);
-        Label selection = new Label("正在读取账号下的 Agent…"); selection.setWrapText(true);
+        Label overall = new Label();
+        overall.setWrapText(true);
+        Label selection = new Label("正在读取在线 Java Link Agent…");
+        selection.setWrapText(true);
         ComboBox<ProjectTarget> targets = new ComboBox<>();
-        targets.setPromptText("选择此项目使用的 Agent");
+        targets.setPromptText("选择此项目使用的网关");
         targets.setDisable(!initiallyEnabled);
-        Button refresh = new Button("刷新 Agent 列表");
-        Button repair = new Button("修复内置运行时");
+        Button refresh = new Button("刷新网关列表");
         AtomicBoolean updatingCatalog = new AtomicBoolean();
         AtomicReference<JsonObject> currentBinding = new AtomicReference<>(initialBinding);
 
         Runnable refreshStatus = () -> updateStatus(overall);
         Runnable loadCatalog = () -> {
             refresh.setDisable(true);
-            selection.setText("正在读取已注册 Agent 和精确目标…");
-            account.catalog().whenComplete((catalog, error) -> Platform.runLater(() -> {
+            selection.setText("正在检查账号权限、网关状态和访问策略…");
+            loadTargets().whenComplete((values, error) -> Platform.runLater(() -> {
                 refresh.setDisable(false);
                 if (error != null) {
                     targets.getItems().clear();
-                    selection.setText("无法读取 Agent 列表：" + rootMessage(error)
-                            + "。请先在 JLShell 账号设置中登录，或前往 Website 注册 Agent。");
+                    selection.setText("无法读取 Java Agent 目录：" + rootMessage(error)
+                            + "。请确认 JLShell 已登录，并在 Website 完成网关注册和访问策略配置。");
                     return;
                 }
-                List<ProjectTarget> values = targets(catalog.getAsJsonObject());
                 ProjectTarget selected = matching(values, currentBinding.get());
                 updatingCatalog.set(true);
                 try {
@@ -121,10 +126,10 @@ final class LinkProjectContribution implements ProjectCreationContribution {
                     updatingCatalog.set(false);
                 }
                 selection.setText(currentBinding.get() != null && selected == null
-                        ? "原项目绑定的 Agent 当前不在可用目录中；已保留原绑定。请核对网关后明确选择，不能自动改绑到另一台设备。"
+                        ? "原项目绑定的网关目前不可用；原绑定已保留。请检查网关在线状态、Link v2 版本和访问策略。"
                         : values.isEmpty()
-                                ? "账号下没有在线 Agent。请前往 Website 创建注册令牌并完成服务器安装。"
-                                : "请选择此项目要使用的 Agent。实际 SSH 主机与端口必须已在 Website 为该 Agent 精确授权。");
+                                ? "没有在线且已绑定安全身份的 Link v2 网关。请先在 Program 设置中创建注册令牌，再按 Website 安装说明部署 Java Agent。"
+                                : "每次 SSH 建连都会重新向 Website 申请目标授权；最终目标必须命中该网关当前的访问策略。");
             }));
         };
 
@@ -134,8 +139,9 @@ final class LinkProjectContribution implements ProjectCreationContribution {
             if (!value) {
                 currentBinding.set(null);
                 bindingUpdate.accept(null);
+            } else if (targets.getValue() != null) {
+                bindingUpdate.accept(targets.getValue().json());
             }
-            else if (targets.getValue() != null) bindingUpdate.accept(targets.getValue().json());
         });
         targets.valueProperty().addListener((observable, oldValue, value) -> {
             if (enabled.isSelected() && !updatingCatalog.get() && value != null) {
@@ -144,33 +150,65 @@ final class LinkProjectContribution implements ProjectCreationContribution {
             }
         });
         refresh.setOnAction(event -> loadCatalog.run());
-        repair.setOnAction(event -> {
-            BundledRuntimeManager.PreparedRuntime prepared = runtime.prepare();
-            ConnectorConfiguration.useBundledDefaults(storage);
-            connector.configure(ConnectorConfiguration.load(storage, prepared));
-            refreshStatus.run();
-        });
         refreshStatus.run();
         loadCatalog.run();
 
-        Label guide = new Label("Agent 与节点凭据在 Website 管理；此处只选择当前项目可用的 Agent 和精确目标。"
-                + "实际连接仍使用保存的 SSH 主机和端口；如列表为空，请在 Website 的“JLShell Link Agent”页面创建一次性注册令牌并完成服务器安装。");
+        Label guide = new Label("项目只保存网关 agentId，不保存票据或登录凭据。SSH 主机和端口仍是实际目标；"
+                + "访问许可在每次连接时由 Website 按最新策略重新签发。");
         guide.setWrapText(true);
-        return new VBox(8, heading, enabled, overall, targets, selection,
-                new HBox(8, refresh, repair), guide);
+        return new VBox(8, heading, enabled, overall, targets, selection, new HBox(8, refresh), guide);
+    }
+
+    private CompletableFuture<List<ProjectTarget>> loadTargets() {
+        if (account == null || subscriptions == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Java Link 客户端尚未初始化"));
+        }
+        return subscriptions.requireProgramAndSession("link.tcp-tunnel")
+                .thenCompose(ignored -> account.agents())
+                .thenCompose(this::loadTargetPolicies);
+    }
+
+    private CompletableFuture<List<ProjectTarget>> loadTargetPolicies(JsonArray agents) {
+        List<CompletableFuture<ProjectTarget>> requests = new ArrayList<>();
+        for (JsonElement item : agents) {
+            JsonObject agent = item.getAsJsonObject();
+            if (!"ONLINE".equals(string(agent, "state"))
+                    || !ProtocolVersion.V2.equals(string(agent, "protocolVersion"))
+                    || string(agent, "nodeKeyFingerprint").isBlank()) {
+                continue;
+            }
+            java.util.UUID id;
+            try { id = java.util.UUID.fromString(string(agent, "agentId")); }
+            catch (RuntimeException invalid) { continue; }
+            requests.add(account.accessPolicy(id).thenApply(policy -> {
+                boolean enabled = policy.has("enabled") && policy.get("enabled").getAsBoolean();
+                JsonArray rules = policy.has("rules") && policy.get("rules").isJsonArray()
+                        ? policy.getAsJsonArray("rules") : new JsonArray();
+                return new ProjectTarget(id.toString(), string(agent, "name"),
+                        string(agent, "nodeKeyFingerprint"), string(agent, "protocolVersion"),
+                        policy.has("version") ? policy.get("version").getAsLong() : 0,
+                        enabled, rules.size());
+            }));
+        }
+        CompletableFuture<?>[] pending = requests.toArray(CompletableFuture[]::new);
+        return CompletableFuture.allOf(pending).thenApply(ignored -> requests.stream()
+                .map(CompletableFuture::join).toList());
     }
 
     private void updateStatus(Label overall) {
-        JsonObject runtimeStatus = runtime.status();
-        JsonObject connectorStatus = connector.status();
-        JsonObject accountStatus = account.status();
-        boolean runtimeReady = runtimeStatus.get("available").getAsBoolean();
-        boolean connectorReady = connectorStatus.get("available").getAsBoolean();
-        boolean signedIn = "AUTHENTICATED".equals(accountStatus.get("state").getAsString());
-        overall.setText(!runtimeReady ? "状态：需要修复插件内置运行时"
-                : !connectorReady ? "状态：Connector 尚未就绪"
-                : !signedIn ? "状态：请先在 JLShell 账号设置中通过 Web 登录"
-                : "状态：已就绪；保存后可为 SSH 连接自动建立 Link 隧道");
+        if (client == null || subscriptions == null) {
+            overall.setText("状态：Java Link 客户端尚未初始化。");
+            return;
+        }
+        JsonObject runtime = client.status();
+        JsonObject subscription = subscriptions.status();
+        String linkState = runtime.get("state").getAsString();
+        String accessState = subscription.get("state").getAsString();
+        overall.setText(!runtime.get("available").getAsBoolean()
+                ? "状态：" + linkState + "。请在 JLShell 中登录并启用宿主加密存储。"
+                : !"READY".equals(accessState)
+                        ? "状态：账号或套餐暂不可用（" + accessState + "）。"
+                        : "状态：Java 客户端已就绪；连接时会重新申请授权并通过 WSS Relay 建立隧道。");
     }
 
     private void save(String projectId, String enabled, String binding) {
@@ -191,42 +229,36 @@ final class LinkProjectContribution implements ProjectCreationContribution {
         catch (RuntimeException error) { return null; }
     }
 
-    private static List<ProjectTarget> targets(JsonObject catalog) {
-        List<ProjectTarget> values = new ArrayList<>();
-        catalog.getAsJsonArray("agents").forEach(agentEntry -> {
-            JsonObject agent = agentEntry.getAsJsonObject();
-            if (!"ONLINE".equals(agent.get("state").getAsString())) return;
-            boolean hasTarget = agent.getAsJsonArray("targets").asList().stream()
-                    .map(JsonElement::getAsJsonObject).anyMatch(target -> target.get("enabled").getAsBoolean());
-            if (hasTarget) values.add(new ProjectTarget(agent.get("id").getAsString(), agent.get("name").getAsString()));
-        });
-        return values;
-    }
-
     private static ProjectTarget matching(List<ProjectTarget> values, JsonObject binding) {
         if (binding == null) return null;
-        return values.stream().filter(value -> value.agentId().equals(string(binding, "agentId"))).findFirst().orElse(null);
+        return values.stream().filter(value -> value.agentId().equals(string(binding, "agentId")))
+                .findFirst().orElse(null);
     }
 
     private static String string(JsonObject value, String name) {
-        return value.has(name) ? value.get(name).getAsString() : "";
+        return value.has(name) && !value.get(name).isJsonNull() ? value.get(name).getAsString() : "";
     }
 
     private static String rootMessage(Throwable error) {
         Throwable current = error;
-        while (current.getCause() != null) current = current.getCause();
+        while ((current.getCause() != null) && (current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException)) current = current.getCause();
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
-    private record ProjectTarget(String agentId, String agentName) {
+    private record ProjectTarget(String agentId, String agentName, String fingerprint,
+            String protocolVersion, long policyVersion, boolean policyEnabled, int ruleCount) {
         JsonObject binding() {
             JsonObject value = new JsonObject();
             value.addProperty("agentId", agentId);
             return value;
         }
-        String json() {
-            return binding().toString();
+        String json() { return binding().toString(); }
+        @Override public String toString() {
+            String shortFingerprint = fingerprint.length() <= 12
+                    ? fingerprint : fingerprint.substring(fingerprint.length() - 12);
+            return agentName + " · " + protocolVersion + " · key …" + shortFingerprint
+                    + " · 策略 v" + policyVersion + (policyEnabled ? "（" + ruleCount + " 条规则）" : "（未启用）");
         }
-        @Override public String toString() { return agentName; }
     }
 }

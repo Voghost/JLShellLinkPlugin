@@ -11,13 +11,17 @@
         <jlshell.plugin.id>com.jlshell.link.program</jlshell.plugin.id>
         <jlshell.plugin.version>${project.version}</jlshell.plugin.version>
         <jlshell.plugin.scope>PROGRAM</jlshell.plugin.scope>
-        <jlshell.link.runtime.bundle>${project.basedir}/../.runtime-bundle</jlshell.link.runtime.bundle>
     </properties>
     <dependencies>
         <dependency>
             <groupId>com.jlshell.link</groupId>
             <artifactId>link-plugin-common</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.jlshell.link</groupId>
+            <artifactId>link-client</artifactId>
+            <version>${jlshell.link.version}</version>
         </dependency>
         <dependency>
             <groupId>net.oomn.jlshell</groupId>
@@ -60,6 +64,19 @@
                             <JLShell-Plugin-Scope>${jlshell.plugin.scope}</JLShell-Plugin-Scope>
                         </manifestEntries>
                     </archive>
+                    <excludes>
+                        <exclude>com/jlshell/link/plugin/program/ConnectorProcessManager*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/ConnectorConfiguration*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/BundledRuntimeManager*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/LinkAccountClient*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/PeerIdCodec*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/TunnelOpenRequest*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/session/LinkSessionContribution*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/session/LinkSessionController*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/session/AgentDeploymentService*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/session/AgentServiceInstaller*.class</exclude>
+                        <exclude>com/jlshell/link/plugin/program/session/RemotePlatform*.class</exclude>
+                    </excludes>
                 </configuration>
             </plugin>
             <plugin>
@@ -71,11 +88,6 @@
             <resource>
                 <directory>src/main/resources</directory>
                 <filtering>true</filtering>
-            </resource>
-            <resource>
-                <directory>${jlshell.link.runtime.bundle}</directory>
-                <targetPath>META-INF/jlshell-link/runtime</targetPath>
-                <filtering>false</filtering>
             </resource>
         </resources>
     </build>

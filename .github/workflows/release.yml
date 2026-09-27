@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 jobs:
   release:
@@ -17,6 +18,9 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
       - name: Validate release notes
         shell: bash
         run: |
@@ -35,48 +39,35 @@ jobs:
             echo "Release notes contain a placeholder; document the actual changes: $notes_file" >&2
             exit 1
           fi
-      - name: Download the matching private Link runtime bundle
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.JLSHELL_LINK_RELEASE_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "Missing JLSHELL_LINK_RELEASE_TOKEN for Voghost/JLShellLink private releases" >&2
-            exit 1
-          fi
-          mkdir -p runtime-download .runtime-bundle
-          runtime_release_tag="${JLSHELL_LINK_RUNTIME_TAG:-v0.1.4}"
-          echo "Using JLShell Link runtime release: $runtime_release_tag"
-          gh release download "$runtime_release_tag" \
-            --repo Voghost/JLShellLink \
-            --pattern 'jlshell-link-plugin-runtime-*.tar.gz*' \
-            --dir runtime-download
-          cd runtime-download
-          sha256sum --check jlshell-link-plugin-runtime-*.tar.gz.sha256
-          tar -xzf jlshell-link-plugin-runtime-*.tar.gz -C ../.runtime-bundle
       - name: Test and package
         shell: bash
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           release_version="${GITHUB_REF_NAME#v}"
           mvn -B -ntp versions:set -DnewVersion="$release_version" -DgenerateBackupPoms=false
           mvn -B -ntp verify
-      - name: Require the verified native runtime in the Program plugin
+      - name: Require the in-process Java Link client in the Program plugin
         shell: bash
         run: |
           jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
           for required in \
-            META-INF/jlshell-link/runtime/manifest.json \
-            META-INF/jlshell-link/runtime/bin/jlshell-connector-linux-x64 \
-            META-INF/jlshell-link/runtime/bin/jlshell-connector-macos-arm64 \
-            META-INF/jlshell-link/runtime/bin/jlshell-connector-windows-x64.exe \
-            META-INF/jlshell-link/runtime/bin/jlshell-agent-linux-x64 \
-            META-INF/jlshell-link/runtime/bin/jlshell-agent-macos-arm64 \
-            META-INF/jlshell-link/runtime/bin/jlshell-agent-windows-x64.exe; do
+            META-INF/jlshell-plugin.json \
+            com/jlshell/link/client/LinkClientEngine.class \
+            com/jlshell/link/client/RelayCarrierPlanFactory.class \
+            com/jlshell/link/plugin/program/LinkClientRuntime.class \
+            com/jlshell/link/internal/netty/channel/nio/NioEventLoopGroup.class \
+            com/jlshell/link/internal/bouncycastle/asn1/x500/X500Name.class; do
             jar tf "$jar_file" | grep -qx "$required" || {
               echo "Plugin release is missing $required" >&2
               exit 1
             }
           done
+          if jar tf "$jar_file" | grep -Eq 'META-INF/jlshell-link/runtime/|jlshell-(connector|agent)-|ConnectorProcessManager.class|LinkSessionContribution.class|LinkSessionController.class|LinkAccountClient.class|BundledRuntimeManager.class|PeerIdCodec.class|TunnelOpenRequest.class'; then
+            echo "Rust Connector/Agent runtime content must not be packaged in the Java plugin" >&2
+            exit 1
+          fi
       - name: Prepare release assets
         shell: bash
         run: |
@@ -87,6 +78,8 @@ jobs:
       - name: Create private GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           release_version="${GITHUB_REF_NAME#v}"

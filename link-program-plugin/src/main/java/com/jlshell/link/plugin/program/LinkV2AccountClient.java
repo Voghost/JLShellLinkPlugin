@@ -1,5 +1,7 @@
 package com.jlshell.link.plugin.program;
 
+import com.jlshell.link.client.WebsiteClientIdentityBinder;
+import com.jlshell.link.core.identity.LocalNodeKey;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -10,6 +12,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
 /** Account-bound v2 requests. JWT handling and renewal remain exclusively in the desktop host. */
 final class LinkV2AccountClient {
@@ -43,8 +46,17 @@ final class LinkV2AccountClient {
 
     CompletableFuture<UUID> hostDeviceRecordId() {
         AccountSession snapshot = accounts.snapshot();
+        return hostDeviceRecordId(snapshot.deviceId());
+    }
+
+    CompletableFuture<UUID> hostDeviceRecordId(String expectedHostDeviceId) {
+        AccountSession snapshot = accounts.snapshot();
         if (!snapshot.authenticated() || snapshot.deviceId() == null || snapshot.deviceId().isBlank()) {
             return CompletableFuture.failedFuture(new IllegalStateException("JLShell account is not signed in"));
+        }
+        if (!Objects.equals(expectedHostDeviceId, snapshot.deviceId())) {
+            return CompletableFuture.failedFuture(new SecurityException(
+                    "JLShell account device changed before Link identity binding"));
         }
         return request("GET", "/api/v1/account/devices", null).thenApply(response -> {
             if (!response.isJsonArray()) throw new IllegalStateException("Invalid device directory response");
@@ -71,6 +83,15 @@ final class LinkV2AccountClient {
             return new ControlCredential(string(value, "credential"),
                     Instant.parse(string(value, "expiresAt")));
         });
+    }
+
+    CompletionStage<WebsiteClientIdentityBinder.DeviceIdentity> bindClientIdentity(
+            UUID deviceRecordId, LocalNodeKey nodeKey) {
+        WebsiteClientIdentityBinder binder = new WebsiteClientIdentityBinder((method, path, jsonBody) -> {
+            JsonElement body = jsonBody == null ? null : com.google.gson.JsonParser.parseString(jsonBody);
+            return accounts.request(new AccountRequest(method, path, body)).thenApply(JsonElement::toString);
+        });
+        return binder.bind(deviceRecordId, nodeKey);
     }
 
     private CompletableFuture<JsonElement> request(String method, String path, JsonElement body) {

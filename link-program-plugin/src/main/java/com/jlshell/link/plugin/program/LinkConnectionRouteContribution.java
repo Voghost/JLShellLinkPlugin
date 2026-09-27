@@ -1,28 +1,29 @@
 package com.jlshell.link.plugin.program;
 
-import java.net.InetSocketAddress;
-import java.util.concurrent.CompletableFuture;
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.jlshell.link.core.ProtocolVersion;
 import com.jlshell.plugin.api.connection.ConnectionRoute;
 import com.jlshell.plugin.api.connection.ConnectionRouteRequest;
 import com.jlshell.plugin.api.connection.ProgramConnectionRouteContribution;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
-/** 在 SSH 建连前为项目绑定的 Agent 签发票据并启动本地 Connector 隧道。 */
+/** Uses the in-process Java Link client before SSH setup; no Connector process is involved in this route. */
 final class LinkConnectionRouteContribution implements ProgramConnectionRouteContribution {
     private final LinkBindingStore bindings;
-    private final LinkAccountClient account;
+    private final LinkV2AccountClient account;
     private final LinkSubscriptionService subscriptions;
-    private final ConnectorProcessManager connector;
+    private final LinkClientRuntime client;
 
-    LinkConnectionRouteContribution(LinkBindingStore bindings, LinkAccountClient account,
-                                    LinkSubscriptionService subscriptions, ConnectorProcessManager connector) {
+    LinkConnectionRouteContribution(LinkBindingStore bindings, LinkV2AccountClient account,
+            LinkSubscriptionService subscriptions, LinkClientRuntime client) {
         this.bindings = bindings;
         this.account = account;
         this.subscriptions = subscriptions;
-        this.connector = connector;
+        this.client = client;
     }
 
     @Override
@@ -33,97 +34,93 @@ final class LinkConnectionRouteContribution implements ProgramConnectionRouteCon
     @Override
     public CompletableFuture<ConnectionRoute> route(ConnectionRouteRequest request) {
         JsonObject binding = bindings.getProject(request.projectId());
-        if (binding == null) return CompletableFuture.failedFuture(new IllegalStateException("Link project binding is missing"));
-        return subscriptions.requireProgram("link.tcp-tunnel")
-                .thenCompose(ignored -> account.catalog())
-                .thenCompose(catalog -> open(request, binding, catalog.getAsJsonObject()));
-    }
+        if (binding == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException("项目 Link Agent 绑定不存在"));
+        }
+        final UUID gateway;
+        try { gateway = UUID.fromString(required(binding, "agentId")); }
+        catch (RuntimeException invalid) {
+            return CompletableFuture.failedFuture(new IllegalStateException("项目 Link Agent 绑定无效", invalid));
+        }
 
-    private CompletableFuture<ConnectionRoute> open(ConnectionRouteRequest request, JsonObject binding, JsonObject catalog) {
-        JsonObject agent = agent(catalog.getAsJsonArray("agents"), required(binding, "agentId"));
-        if (!"ONLINE".equals(agent.get("state").getAsString())) {
-            return CompletableFuture.failedFuture(new IllegalStateException("项目绑定的 Link Agent 当前离线"));
-        }
-        String targetIp = request.host();
-        int targetPort = request.port();
-        if (!targetExists(agent.getAsJsonArray("targets"), targetIp, targetPort)) {
-            return CompletableFuture.failedFuture(new IllegalStateException("当前 SSH 主机或端口未在该 Link Agent 的精确目标授权列表中"));
-        }
-        JsonObject ticketRequest = new JsonObject();
-        ticketRequest.addProperty("agentId", agent.get("id").getAsString());
-        ticketRequest.addProperty("targetIp", targetIp);
-        ticketRequest.addProperty("targetPort", targetPort);
-        return account.issueTicket(ticketRequest).thenCompose(ticket -> {
-            JsonObject tunnel = new JsonObject();
-            tunnel.addProperty("agentPeer", agent.get("peerId").getAsString());
-            tunnel.add("agentAddresses", agent.has("addresses") ? agent.get("addresses").deepCopy() : new JsonArray());
-            tunnel.addProperty("connectPolicy", "auto");
-            JsonObject relay = firstRelay(catalog.getAsJsonArray("relays"));
-            if (relay != null) {
-                tunnel.addProperty("relayAddress", relay.get("endpoint").getAsString());
-                tunnel.addProperty("relayPeer", relay.get("peerId").getAsString());
+        CompletableFuture<ConnectionRoute> result = new CompletableFuture<>();
+        AtomicReference<CompletableFuture<?>> opening = new AtomicReference<>();
+        result.whenComplete((route, error) -> {
+            if (result.isCancelled()) {
+                CompletableFuture<?> pending = opening.get();
+                if (pending != null) pending.cancel(true);
             }
-            tunnel.addProperty("ticket", ticket.getAsJsonObject().get("ticket").getAsString());
-            tunnel.addProperty("targetIp", targetIp);
-            tunnel.addProperty("targetPort", targetPort);
-            return connector.open(tunnel).thenApply(result -> route(result.getAsJsonObject(), request));
         });
+        subscriptions.requireProgramAndSession("link.tcp-tunnel")
+                .thenCompose(ignored -> account.agents())
+                .whenComplete((agents, error) -> {
+                    if (result.isDone()) return;
+                    if (error != null) {
+                        result.completeExceptionally(rootCause(error));
+                        return;
+                    }
+                    try {
+                        requireOnlineV2Agent(agents, gateway);
+                    } catch (RuntimeException invalid) {
+                        result.completeExceptionally(invalid);
+                        return;
+                    }
+                    CompletableFuture<com.jlshell.link.client.LinkClientEngine.LocalTunnelLease> tunnel;
+                    try { tunnel = client.openTunnel(gateway.toString(), request.host(), request.port()); }
+                    catch (RuntimeException failure) {
+                        result.completeExceptionally(failure);
+                        return;
+                    }
+                    opening.set(tunnel);
+                    if (result.isCancelled()) tunnel.cancel(true);
+                    tunnel.whenComplete((lease, tunnelError) -> {
+                        if (tunnelError != null) {
+                            result.completeExceptionally(rootCause(tunnelError));
+                            return;
+                        }
+                        ConnectionRoute route = ConnectionRoute.loopback(
+                                lease.host(), lease.port(), lease, gateway.toString());
+                        if (!result.complete(route)) lease.close();
+                    });
+                });
+        return result;
     }
 
-    private ConnectionRoute route(JsonObject opened, ConnectionRouteRequest request) {
-        String tunnelId = opened.get("tunnelId").getAsString();
-        InetSocketAddress local;
-        try {
-            String address = opened.get("localAddress").getAsString();
-            int separator = address.lastIndexOf(':');
-            local = new InetSocketAddress(address.substring(0, separator), Integer.parseInt(address.substring(separator + 1)));
-        } catch (RuntimeException error) {
-            close(tunnelId);
-            throw new IllegalStateException("Connector returned an invalid local address", error);
+    private static void requireOnlineV2Agent(JsonArray agents, UUID gateway) {
+        if (agents == null) throw new IllegalStateException("Website 未返回 Link Agent 目录");
+        for (JsonElement entry : agents) {
+            JsonObject agent = entry.getAsJsonObject();
+            if (!gateway.toString().equals(string(agent, "agentId"))) continue;
+            if (!"ONLINE".equals(string(agent, "state"))) {
+                throw new IllegalStateException("项目绑定的 Java Link Agent 当前离线");
+            }
+            if (!ProtocolVersion.V2.equals(string(agent, "protocolVersion"))) {
+                throw new IllegalStateException("项目绑定的 Agent 尚未升级到 Link v2");
+            }
+            if (string(agent, "nodeKeyFingerprint").isBlank()) {
+                throw new IllegalStateException("Website 尚未绑定该 Agent 的安全身份");
+            }
+            return;
         }
-        if (!local.getAddress().isLoopbackAddress()) {
-            close(tunnelId);
-            throw new IllegalStateException("Connector must listen only on loopback");
-        }
-        String host = local.getAddress().getHostAddress().contains(":") ? "::1" : "127.0.0.1";
-        return ConnectionRoute.loopback(host, local.getPort(), () -> close(tunnelId));
-    }
-
-    private void close(String tunnelId) {
-        JsonObject request = new JsonObject(); request.addProperty("tunnelId", tunnelId);
-        connector.close(request).exceptionally(error -> null).join();
-    }
-
-    private static JsonObject agent(JsonArray agents, String agentId) {
-        for (JsonElement candidate : agents) {
-            JsonObject agent = candidate.getAsJsonObject();
-            if (agentId.equals(agent.get("id").getAsString())) return agent;
-        }
-        throw new IllegalStateException("项目绑定的 Link Agent 不属于当前账号或已被吊销");
-    }
-
-    private static boolean targetExists(JsonArray targets, String targetIp, int targetPort) {
-        for (JsonElement candidate : targets) {
-            JsonObject target = candidate.getAsJsonObject();
-            if (target.get("enabled").getAsBoolean() && targetIp.equals(target.get("targetIp").getAsString())
-                    && targetPort == target.get("targetPort").getAsInt()) return true;
-        }
-        return false;
-    }
-
-    private static JsonObject firstRelay(JsonArray relays) {
-        if (relays == null) return null;
-        for (JsonElement candidate : relays) {
-            JsonObject relay = candidate.getAsJsonObject();
-            if (relay.has("endpoint") && relay.has("peerId")) return relay;
-        }
-        return null;
+        throw new IllegalStateException("项目绑定的 Link Agent 不属于当前账号或已被撤销");
     }
 
     private static String required(JsonObject value, String name) {
-        if (!value.has(name) || value.get(name).isJsonNull()) throw new IllegalStateException("项目 Link 绑定无效");
-        String result = value.get(name).getAsString().trim();
+        String result = string(value, name).trim();
         if (result.isEmpty()) throw new IllegalStateException("项目 Link 绑定无效");
         return result;
+    }
+
+    private static String string(JsonObject value, String name) {
+        return value.has(name) && !value.get(name).isJsonNull() ? value.get(name).getAsString() : "";
+    }
+
+    private static Throwable rootCause(Throwable error) {
+        Throwable current = error;
+        while ((current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException) && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
     }
 }
