@@ -9,6 +9,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.gson.JsonObject;
+import com.jlshell.link.core.model.ConnectPolicy;
 import com.jlshell.link.plugin.common.LinkPluginContract;
 import com.jlshell.link.plugin.program.session.LinkSessionStatusContribution;
 import com.jlshell.plugin.api.JlShellProgramPlugin;
@@ -222,6 +223,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         enrollmentState.setWrapText(true);
         TextField relayUri = new TextField(LinkClientSettings.relayUri(context.storage()));
         relayUri.setPromptText(LinkClientSettings.DEFAULT_RELAY_URI);
+        TextField stunServers = new TextField(LinkClientSettings.stunServers(context.storage()));
+        stunServers.setPromptText("可选：203.0.113.10:3478,[2001:db8::10]:3478");
+        ComboBox<ConnectPolicy> connectPolicy = new ComboBox<>();
+        connectPolicy.getItems().setAll(ConnectPolicy.values());
+        connectPolicy.setValue(LinkClientSettings.connectPolicy(context.storage()));
 
         ComboBox<ForwardAgent> forwardAgent = new ComboBox<>();
         forwardAgent.setPromptText("选择在线且启用访问策略的 Java 网关");
@@ -247,6 +253,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             runtimeState.setText("Java 客户端：" + runtime.get("state").getAsString()
                     + " · 活跃隧道 " + runtime.get("openTunnels").getAsInt()
                     + " · 等待连接 " + runtime.get("pendingTunnels").getAsInt()
+                    + " · 控制信令 " + runtime.get("controlSignalState").getAsString()
                     + pathDiagnostic(runtime));
             accountState.setText("账号：" + account.get("state").getAsString()
                     + " · " + account.get("baseUrl").getAsString());
@@ -254,13 +261,15 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
             trial.setDisable(!"TRIAL_AVAILABLE".equals(subscription.get("state").getAsString()));
         };
 
-        Button save = new Button("保存 Relay 地址");
+        Button save = new Button("保存连接配置");
         save.setOnAction(event -> {
             try {
                 LinkClientSettings.saveRelayUri(context.storage(), relayUri.getText());
+                LinkClientSettings.saveStunServers(context.storage(), stunServers.getText());
+                LinkClientSettings.saveConnectPolicy(context.storage(), connectPolicy.getValue());
                 linkClientRuntime.reset();
                 update.run();
-                context.showNotification("JLShell Link Relay 地址已保存", NotificationLevel.INFO);
+                context.showNotification("JLShell Link 连接配置已保存", NotificationLevel.INFO);
             } catch (RuntimeException error) {
                 overall.setText("配置无效：" + error.getMessage());
                 context.showNotification("JLShell Link 配置无效", NotificationLevel.ERROR);
@@ -326,7 +335,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 return;
             }
             openForward.setDisable(true);
-            forwardStatus.setText("正在向 Website 重新申请目标授权并建立 WSS Relay 转发…");
+            forwardStatus.setText("正在向 Website 重新申请目标授权，并按连接策略准备直连或 Relay…");
             subscriptions.requireProgramAndSession("link.tcp-tunnel")
                     .thenCompose(ignored -> linkClientRuntime.openForward(selected.agentId(),
                             forwardTargetIp.getText().trim(), targetPort))
@@ -355,14 +364,17 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                     }));
         });
         loadForwardAgents.run();
-        VBox advanced = new VBox(8, new Label("Link v2 WSS Relay 地址"), relayUri, save,
-                new Label("必须使用 wss://主机/link/v2/relay；客户端节点密钥和 TLS 身份由宿主加密存储管理。"));
+        VBox advanced = new VBox(8, new Label("连接策略"), connectPolicy,
+                new Label("AUTO 会并行准备直连与 Relay，先完成安全握手的一条路径胜出；DIRECT_ONLY 和 RELAY_ONLY 用于诊断。"),
+                new Label("Link v2 WSS Relay 地址"), relayUri,
+                new Label("可选 STUN 服务器（数值 IP:端口，多个用逗号分隔，最多 4 个）"), stunServers,
+                save, new Label("客户端节点密钥和 TLS 身份由宿主加密存储管理；STUN 项只保存公开的服务器地址。"));
         advanced.setPadding(new Insets(8));
         TitledPane advancedPane = new TitledPane("高级配置（一般无需修改）", advanced);
         advancedPane.setExpanded(false);
 
-        Label note = new Label("SSH 路由由进程内 Java 客户端建立，使用 Website 在线 Agent 目录和每次连接重新签发的访问授权。"
-                + "当前桌面数据路径使用 WSS Relay；P2P 产品选路和跨平台 Java Agent 安装包仍在后续阶段。");
+        Label note = new Label("SSH 路由由进程内 Java 客户端建立，每次连接和重连都向 Website 申请新授权。"
+                + "AUTO 会同时准备 A—C 直连和 B Relay；网络变化会取消未完成的候选代次，已建立的业务流保留原路径。");
         note.setWrapText(true);
         VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState,
                 new HBox(8, trial, refresh), note,
