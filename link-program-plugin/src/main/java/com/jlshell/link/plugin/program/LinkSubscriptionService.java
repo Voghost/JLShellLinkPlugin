@@ -64,6 +64,17 @@ final class LinkSubscriptionService {
         return require(sessionAccess, "SESSION", entitlementCode);
     }
 
+    CompletableFuture<JsonElement> requireProgramAndSession(String entitlementCode) {
+        return refresh().thenApply(ignored -> {
+            if (!allowed(programAccess)) throw new IllegalStateException(policyMessage(programAccess));
+            if (!allowed(sessionAccess)) throw new IllegalStateException(policyMessage(sessionAccess));
+            if (!has(entitlementCode)) {
+                throw new IllegalStateException("当前套餐不包含此 Link 功能，请升级 Plus 或 Pro 或领取试用");
+            }
+            return status();
+        });
+    }
+
     JsonObject status() {
         JsonObject result = new JsonObject();
         if (!account.snapshot().authenticated()) {

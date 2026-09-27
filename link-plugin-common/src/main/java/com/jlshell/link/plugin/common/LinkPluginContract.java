@@ -15,6 +15,7 @@ public final class LinkPluginContract {
     public static final String SUBSCRIPTION_REFRESH_CAPABILITY = "link.subscription.refresh";
     public static final String TRIAL_CLAIM_CAPABILITY = "link.subscription.trial.claim";
     public static final String LINK_CATALOG_CAPABILITY = "link.catalog";
+    public static final String LINK_CATALOG_V2_CAPABILITY = "link.catalog.v2";
     public static final String TICKET_ISSUE_CAPABILITY = "link.ticket.issue";
     public static final String AGENT_CHALLENGE_CAPABILITY = "link.agent.challenge";
     public static final String AGENT_REGISTER_CAPABILITY = "link.agent.register";

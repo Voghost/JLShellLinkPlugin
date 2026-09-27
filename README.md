@@ -1,92 +1,57 @@
 # JLShell Link Plugin
 
-JLShell Link 的独立私有插件工程，仓库为 `Voghost/JLShellLinkPlugin`。项目只生成一个
-Program 插件 JAR，插件标识为 `com.jlshell.link.program`。它统一管理 Connector 身份、
-项目 Agent 意图、Agent 部署以及隧道生命周期；账号会话由 JLShell 宿主统一管理。
+`Voghost/JLShellLinkPlugin` 是 JLShell Link 的独立 Java 21 插件工程，只发布一个
+Program fat JAR，插件 ID 为 `com.jlshell.link.program`。插件使用 Plugin SDK 1.5.0 和
+JLShell Link Java Client 0.1.2；账号登录和 HTTP 请求由 JLShell 宿主提供。
 
-Program 插件使用 SDK 1.4.0 的连接前路由、项目管理和宿主账号会话网关。它不再注册
-会话页面：隧道必须在 SSH 会话建立前就绪，否则保存的内网 SSH 地址无法使用。一个
-Program 插件、一个 ServiceLoader 入口和一个插件 ID 即可完成整个流程。
+SSH 建连前的隧道由进程内 Java 客户端创建。客户端代码及其 Netty、KCP、Bouncy Castle
+依赖会一起打入 fat JAR，并重定位到插件私有包名；宿主 SDK、JavaFX 和日志实现仍由宿主提供。
+发行包不再捆绑 Rust Connector/Agent，也不会为桌面 SSH 路由启动外部 Connector 进程。
 
-正式插件 JAR 会直接内置 Linux x64、macOS ARM64、Windows x64 的 Connector 和 Agent。
-首次激活时自动解包到 `~/.jlshell/link/runtime/<version>/`，逐文件核对清单中的大小和
-SHA-256，并设置仅当前用户可读写执行的权限。Website 默认使用
-`https://jlshell.oomn.net`，Connector、身份文件和 Agent 目录无需普通用户填写；设置页
-只把路径覆盖保留在折叠的高级配置中。账号令牌只保存在 JLShell 宿主的加密存储中，
-不传给插件、不传给会话控制器，也不写入日志。
+## 当前桌面连接流程
 
-登录后 Program 会从 Website 读取当前 Free/Plus/Pro entitlement，并校验 Program
-插件策略。Agent 目录、取票和隧道能力都在实际入口再次检查，不依赖界面按钮防绕过。
-Free 用户可直接使用已完成 PeerId
-持钥验证的桌面设备领取一次 14 天 Pro 试用；客户端只上传产品域 SHA-256 机器指纹，
-不会上传或保存操作系统原始机器标识。
+1. 用户在 JLShell“账号设置”中登录。插件通过宿主账号请求网关访问 Website，不读取或保存账号 JWT。
+2. 项目管理页从 Website 获取在线的 Link v2 Agent 和访问策略；项目只保存选中的 `agentId`。
+3. SSH 建连时重新检查 Program/Session 套餐和策略，再确认 Agent 在线、协议版本为 Link v2、节点密钥已绑定。
+4. 插件使用 JLShell 宿主的加密存储创建或读取 A 节点密钥与 TLS 身份；Website 设备绑定和每次目标访问均使用宿主授权请求。
+5. 当前桌面客户端使用 `RELAY_ONLY`，通过 WSS Relay 建立内层 mTLS 和 HTTP/2 CONNECT，成功后才向宿主返回一次性 `127.0.0.1` 隧道租约。
+6. 宿主使用 Plugin SDK 1.5.0 将真实目标身份与回环 socket 分开处理，保留原 SSH 用户名、凭据和严格主机密钥校验；关闭、取消或失败时释放租约。
 
-## 当前连接模型
+默认 Relay 地址为 `wss://jlink.oomn.net/link/v2/relay`。可在 Program 插件设置的折叠高级区域调整；设置只存非敏感地址，修改后下次连接重新初始化客户端。
 
-1. 用户在 Website 的“JLShell Link Agent”创建只显示一次的 15 分钟注册令牌，并在目标服务器安装 Agent。
-2. Agent 消费令牌后获得独立节点凭据；Website 管理 Agent 状态、轮换/吊销节点凭据和精确 IP:端口目标授权。
-3. JLShell 项目管理页只选择一个在线 Agent。保存的 SSH 主机和端口仍是实际内网目标，例如 `192.168.31.20:22`。
-4. 打开 SSH 连接时，插件确认该项目绑定、Agent 在线和精确目标授权，向 Website 取单流票据并启动本机回环 Connector；宿主仅把这一连接映射至 `127.0.0.1` 或 `::1`，保留原 SSH 用户名、认证方式和凭据。
-5. SSH 会话关闭、连接失败、重连或插件停用时，Connector 隧道会随资源租约释放。
+项目连接目标必须是 Website 访问策略允许的数值 IP 和端口。每次连接以及重连都会重新申请访问授权；账号、Agent、策略或节点密钥不匹配时失败关闭。
 
-稳定 capability 仅供 Program 内部和受控扩展使用：
+## 注册和 Agent 状态
 
-- `link.runtime.status`
-- `link.tunnel.open`
-- `link.tunnel.close`
-- `link.account.status`
-- `link.subscription.status`、`link.subscription.refresh`、`link.subscription.trial.claim`
-- `link.catalog`、`link.ticket.issue`
+Program 插件设置提供“添加 Java 网关”入口，通过当前 JLShell 账号创建 Website 一次性 enrollment token。令牌仅在创建后显示给用户，不写入插件设置或日志。然后按 Website 的 Java Agent 安装说明在 C 上完成注册。
 
-Connector 只使用 `127.0.0.1:0` 打开本地监听。签名票据写入插件私有运行目录中的
-0600 临时文件，Connector 报告监听地址后立即删除；插件停用时终止全部子进程。
+自动 SSH 上传、注册、系统服务安装及跨平台 Java Agent 制品仍需 Link `DIST-01` 交付后完成；插件目前不再回退到旧 Rust Agent 部署流程。当前产品客户端还没有 P2P 自动选路，桌面路由仅使用已经验收的 WSS Relay。
 
-新建和已有项目的管理页都会展示账号、内置运行时和 Connector 状态，并列出当前账号
-已在线且存在精确目标授权的 Agent。Agent 的下载、注册令牌和服务器安装说明统一放在
-Website，避免在某个已打开 SSH 会话的页面内配置全局 Program 插件。
+## 数据存储与安全边界
 
-内置运行时包含以下固定文件名：
+- JLShell 账号会话、JWT 和请求续期只由宿主管理。
+- A 的 Ed25519 私钥与 PKCS#12 客户端 TLS 身份只进入 Plugin SDK `SecureStorage`；无法使用宿主加密存储时，客户端拒绝初始化。
+- Relay URL、项目 `agentId` 等非秘密设置存入 PluginStorage。
+- 每个隧道都由 Website 根据当前账号、A 设备身份、Agent 身份、目标和策略重新授权。Connector 参数、PeerId、多地址和长期访问票据不进入默认路由。
+- 本地监听只绑定随机 loopback 端口，并只接受一条 SSH TCP 流；隧道关闭或引擎停用时释放端口、网络资源和待处理任务。
 
-```text
-jlshell-agent-linux-x64
-jlshell-agent-macos-arm64
-jlshell-agent-windows-x64.exe
-```
+## 构建与依赖
 
-账号登录由 JLShell 的“账号设置”统一完成，Link 不再显示、创建或保存第二份
-登录态。宿主仅向 Link 暴露非敏感账号状态、设备 ID 和受限的 Link 控制平面请求；随后
-插件调用 Connector 对一次性 challenge 签名，将宿主设备绑定到 Connector PeerId。
-套餐、试用与 Program 策略也通过相同的宿主请求通道查询和校验，插件不会读取或续期
-账号令牌。Agent 令牌不进入 JLShell；只在远程服务器的受限文件中被 Agent 消费一次。
-
-## SDK 与本地构建
-
-默认从 Maven Central 获取 SDK
-`net.oomn.jlshell:plugin-api:1.4.0` 和同版本 `program-api`，构建不需要 GitHub Packages 凭据或额外
-Maven `settings.xml`。
-
-需要联调尚未发布的宿主 API 变更时，可先在相邻 JLShell 仓库安装当前 API，再覆盖
-依赖版本。项目创建与 Host 事件需要包含阶段 1 扩展的最新本地 SDK：
+Plugin SDK `net.oomn.jlshell:plugin-api` 和 `program-api` 1.5.0 从 Maven Central 获取。
+Link Java 制品 `com.jlshell.link:*:0.1.2` 从 `Voghost/JLShellLink` 的 GitHub Packages 获取。
+本地 Maven `settings.xml` 需要配置 `github` server ID、GitHub 用户名和具有 `read:packages`
+权限的只读令牌；令牌不得写进仓库。GitHub Actions 使用仓库授权的 `GITHUB_TOKEN`。
 
 ```bash
-cd ../JLShell
-mvn -pl plugin-api,program-api -am install
-
-cd ../JLShellLinkPlugin
-mvn verify -Djlshell.plugin-api.version=0.1.0.RELEASE
+mvn -B -ntp verify
 ```
 
-唯一的 fat JAR 位于：
+Program fat JAR：
 
 ```text
-link-program-plugin/target/link-program-plugin-0.1.0-SNAPSHOT-fat.jar
+link-program-plugin/target/link-program-plugin-<version>-fat.jar
 ```
 
-`link-plugin-distribution/target/plugins/` 汇集同一个产物。Plugin API、JavaFX、
-SLF4J 和 Logback 均由宿主提供，不打入 fat JAR。本工程设置
-`maven.deploy.skip=true`，不会发布到 Maven Central 或其他 Maven 仓库。
-
-正式标签构建要求 `Voghost/JLShellLink` 存在同名标签，并在本仓库配置只读细粒度
-`JLSHELL_LINK_RELEASE_TOKEN`。Release Action 下载同名私有运行时包，验证包摘要后才
-执行 Maven 打包；缺少清单或任一平台二进制时直接失败，禁止发布“需要用户手填路径”的
-残缺插件。
+`link-plugin-distribution/target/plugins/` 汇集唯一的 Program 插件 JAR。CI 会确认 Java
+Link 客户端和已重定位网络依赖存在、旧 Rust 运行时没有进入发行包、宿主 API 没有重复打包。
+插件不会发布到 Maven Central。

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build:
@@ -22,7 +23,13 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
       - name: Test and package plugin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn -B -ntp verify
       - name: Verify host API is excluded from the fat JAR
         shell: bash
@@ -44,6 +51,20 @@ jobs:
               exit 1
             fi
           done
+          for required_entry in \
+            com/jlshell/link/client/LinkClientEngine.class \
+            com/jlshell/link/client/RelayCarrierPlanFactory.class \
+            com/jlshell/link/plugin/program/LinkClientRuntime.class \
+            com/jlshell/link/internal/netty/channel/nio/NioEventLoopGroup.class; do
+            if ! jar tf "$jar_file" | grep -qx "$required_entry"; then
+              echo "Missing in-process Java Link runtime class $required_entry" >&2
+              exit 1
+            fi
+          done
+          if jar tf "$jar_file" | grep -Eq 'META-INF/jlshell-link/runtime/|jlshell-(connector|agent)-|ConnectorProcessManager.class|LinkSessionContribution.class|LinkSessionController.class|LinkAccountClient.class|BundledRuntimeManager.class|PeerIdCodec.class|TunnelOpenRequest.class'; then
+            echo "Legacy Connector/Agent runtime content must not be packaged in the Java plugin" >&2
+            exit 1
+          fi
           if [ "$(find link-plugin-distribution/target/plugins -maxdepth 1 -name '*.jar' | wc -l | tr -d ' ')" != "1" ]; then
             echo "Distribution must contain exactly one Program plugin JAR" >&2
             exit 1

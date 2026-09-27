@@ -1,14 +1,12 @@
 package com.jlshell.link.plugin.program;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.gson.JsonObject;
 import com.jlshell.link.plugin.common.LinkPluginContract;
@@ -21,23 +19,24 @@ import com.jlshell.plugin.api.event.SessionOpenedEvent;
 import com.jlshell.plugin.api.lifecycle.Registration;
 import com.jlshell.plugin.api.rpc.Capability;
 import com.jlshell.plugin.api.storage.PluginStorage;
+import com.jlshell.program.api.AccountSession;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TitledPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
 
-    private static final long MAX_AGENT_BYTES = 200L * 1024 * 1024;
     private ProgramPluginContext context;
-    private ConnectorProcessManager connectorManager;
-    private LinkAccountClient accountClient;
+    private LinkV2AccountClient v2AccountClient;
     private LinkSubscriptionService subscriptions;
-    private BundledRuntimeManager runtimeManager;
+    private LinkClientRuntime linkClientRuntime;
     private final List<Registration> registrations = new ArrayList<>();
     private final Map<String, LinkBindingStore.SessionReference> sessionReferences = new ConcurrentHashMap<>();
     private LinkBindingStore bindingStore;
@@ -75,28 +74,15 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
     @Override
     public void activate(ProgramPluginContext context) {
         this.context = context;
-        runtimeManager = new BundledRuntimeManager();
-        BundledRuntimeManager.PreparedRuntime bundled = runtimeManager.prepare();
-        connectorManager = new ConnectorProcessManager(
-                ConnectorConfiguration.load(context.storage(), bundled));
-        accountClient = new LinkAccountClient(context.accountSession(), connectorManager);
+        v2AccountClient = new LinkV2AccountClient(context.accountSession());
         subscriptions = new LinkSubscriptionService(context.accountSession());
         bindingStore = new LinkBindingStore(context.storage());
+        linkClientRuntime = new LinkClientRuntime(context.accountSession(), context.secureStorage(),
+                context.storage(), v2AccountClient);
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.RUNTIME_STATUS_CAPABILITY)
                 .description("Return the process-wide JLShell Link runtime status.")
                 .requiresSession(false)
                 .handler((args, capabilityContext) -> CompletableFuture.completedFuture(runtimeStatus()))
-                .build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_OPEN_CAPABILITY)
-                .description("Start a loopback-only Connector tunnel from a signed Link ticket.")
-                .requiresSession(false)
-                .handler((args, capabilityContext) -> subscriptions.requireSession("link.tcp-tunnel")
-                        .thenCompose(ignored -> connectorManager.open(args)))
-                .build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TUNNEL_CLOSE_CAPABILITY)
-                .description("Stop a Connector tunnel owned by this plugin process.")
-                .requiresSession(false)
-                .handler((args, capabilityContext) -> connectorManager.close(args))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.PROJECT_AGENT_INTENT_CAPABILITY)
                 .description("Return whether the current session project requested Agent guidance.")
@@ -104,16 +90,10 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 .handler((args, capabilityContext) -> CompletableFuture.completedFuture(
                         projectAgentIntent(requiredString(args.getAsJsonObject(), "sessionId"))))
                 .build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)
-                .description("Resolve a locally configured Agent binary for a supported remote platform.")
-                .requiresSession(false)
-                .handler((args, capabilityContext) -> subscriptions.requireSession("link.agent-deploy")
-                        .thenCompose(ignored -> agentInstallSpec(args)))
-                .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.ACCOUNT_STATUS_CAPABILITY)
                 .description("Return the non-sensitive host account session state used by Link.")
                 .requiresSession(false)
-                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(accountClient.status()))
+                .handler((args, capabilityContext) -> CompletableFuture.completedFuture(hostAccountStatus()))
                 .build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY)
                 .description("Return cached Link plan and Program/Session policy state.")
@@ -129,21 +109,14 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                     return subscriptions.claimTrial(requiredString(input, "machineFingerprint"),
                             context.accountSession().snapshot().deviceId());
                 }).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_CAPABILITY)
-                .description("List owned Agents, targets and available Relays without exposing the account token.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.catalog()).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.TICKET_ISSUE_CAPABILITY)
-                .description("Issue a one-stream signed ticket for the registered Connector identity.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.issueTicket(args)).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_CHALLENGE_CAPABILITY)
-                .description("Issue an Agent proof-of-possession challenge.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.agentChallenge(args)).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AGENT_REGISTER_CAPABILITY)
-                .description("Register a proven Agent and its initial exact SSH target.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.registerAgent(args)).build());
-        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.AUTHORITY_CAPABILITY)
-                .description("Download the public Link ticket Authority keyring.")
-                .requiresSession(false).handler((args, capabilityContext) -> accountClient.authority()).build());
+        context.capabilityRegistry().register(Capability.builder(LinkPluginContract.LINK_CATALOG_V2_CAPABILITY)
+                .description("List Java Link Agents registered to the current host account.")
+                .requiresSession(false).handler((args, capabilityContext) -> v2AccountClient.agents()
+                        .thenApply(agents -> {
+                            JsonObject catalog = new JsonObject();
+                            catalog.add("agents", agents);
+                            return catalog;
+                        })).build());
         context.capabilityRegistry().register(Capability.builder(LinkPluginContract.BINDING_GET_CAPABILITY)
                 .description("Return the Agent binding for the current saved connection.")
                 .requiresSession(false).handler((args, capabilityContext) -> CompletableFuture.completedFuture(
@@ -155,11 +128,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                         saveBinding(args.getAsJsonObject()))).build());
         if (context.projectIntegration().available()) {
             registrations.add(context.projectIntegration().register(new LinkProjectContribution(
-                    context.storage(), accountClient, connectorManager, runtimeManager, bindingStore)));
+                    context.storage(), v2AccountClient, subscriptions, linkClientRuntime, bindingStore)));
         }
         if (context.connectionIntegration().available()) {
             registrations.add(context.connectionIntegration().register(new LinkConnectionRouteContribution(
-                    bindingStore, accountClient, subscriptions, connectorManager)));
+                    bindingStore, v2AccountClient, subscriptions, linkClientRuntime)));
         }
         if (context.sessionIntegration().available()) {
             registrations.add(context.sessionIntegration().register(new LinkSessionStatusContribution()));
@@ -198,10 +171,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         sessionReferences.clear();
         for (String capability : List.of(
                 LinkPluginContract.RUNTIME_STATUS_CAPABILITY,
-                LinkPluginContract.TUNNEL_OPEN_CAPABILITY,
-                LinkPluginContract.TUNNEL_CLOSE_CAPABILITY,
-                LinkPluginContract.PROJECT_AGENT_INTENT_CAPABILITY,
-                LinkPluginContract.AGENT_INSTALL_SPEC_CAPABILITY)) {
+                LinkPluginContract.PROJECT_AGENT_INTENT_CAPABILITY)) {
             context.capabilityRegistry().unregister(capability);
         }
         for (String capability : List.of(
@@ -209,26 +179,16 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 LinkPluginContract.SUBSCRIPTION_STATUS_CAPABILITY,
                 LinkPluginContract.SUBSCRIPTION_REFRESH_CAPABILITY,
                 LinkPluginContract.TRIAL_CLAIM_CAPABILITY,
-                LinkPluginContract.LINK_CATALOG_CAPABILITY,
-                LinkPluginContract.TICKET_ISSUE_CAPABILITY,
-                LinkPluginContract.AGENT_CHALLENGE_CAPABILITY,
-                LinkPluginContract.AGENT_REGISTER_CAPABILITY,
-                LinkPluginContract.AUTHORITY_CAPABILITY,
+                LinkPluginContract.LINK_CATALOG_V2_CAPABILITY,
                 LinkPluginContract.BINDING_GET_CAPABILITY,
                 LinkPluginContract.BINDING_SAVE_CAPABILITY)) {
             context.capabilityRegistry().unregister(capability);
         }
-        if (accountClient != null) {
-            accountClient.close();
-        }
-        accountClient = null;
+        if (linkClientRuntime != null) linkClientRuntime.close();
+        linkClientRuntime = null;
+        v2AccountClient = null;
         subscriptions = null;
         bindingStore = null;
-        if (connectorManager != null) {
-            connectorManager.close();
-        }
-        connectorManager = null;
-        runtimeManager = null;
         context.info("JLShell Link program plugin deactivated");
         context = null;
     }
@@ -240,8 +200,6 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         if (!settingsDependenciesReady()) {
             return unavailableSettingsView();
         }
-        ConnectorConfiguration configuration = ConnectorConfiguration.load(
-                context.storage(), runtimeManager.prepared()).normalized();
         Label title = new Label("JLShell Link");
         Label overall = new Label();
         overall.setWrapText(true);
@@ -249,84 +207,178 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         Label subscriptionState = new Label();
         subscriptionState.setWrapText(true);
         Label runtimeState = new Label();
-        Label connectorState = new Label();
 
         Button refresh = new Button("刷新状态");
         Button trial = new Button("领取 14 天 Pro 试用");
-        Button repair = new Button("重新准备内置运行时");
+        TextField gatewayName = new TextField();
+        gatewayName.setPromptText("新网关名称");
+        Button addGateway = new Button("添加 Java 网关");
+        TextArea enrollment = new TextArea();
+        enrollment.setEditable(false);
+        enrollment.setWrapText(true);
+        enrollment.setVisible(false);
+        enrollment.setManaged(false);
+        Label enrollmentState = new Label("无需先打开到网关的 SSH 会话。生成一次性注册令牌后，按网站安装指引部署 Java Agent。");
+        enrollmentState.setWrapText(true);
+        TextField relayUri = new TextField(LinkClientSettings.relayUri(context.storage()));
+        relayUri.setPromptText(LinkClientSettings.DEFAULT_RELAY_URI);
 
-        TextField connector = new TextField(text(configuration.connectorBinary()));
-        connector.setPromptText("默认自动使用插件内置 Connector");
-        TextField identity = new TextField(text(configuration.identityFile()));
-        identity.setPromptText("Connector 身份文件路径");
-        TextField agents = new TextField(text(configuration.agentBundleDirectory()));
-        agents.setPromptText("默认自动使用插件内置三平台 Agent");
+        ComboBox<ForwardAgent> forwardAgent = new ComboBox<>();
+        forwardAgent.setPromptText("选择在线且启用访问策略的 Java 网关");
+        Button refreshForwardAgents = new Button("刷新网关");
+        TextField forwardTargetIp = new TextField();
+        forwardTargetIp.setPromptText("目标数值 IP，例如 192.168.1.20");
+        TextField forwardTargetPort = new TextField();
+        forwardTargetPort.setPromptText("目标端口，例如 5432");
+        Button openForward = new Button("打开本地转发");
+        Button closeForward = new Button("关闭本地转发");
+        closeForward.setDisable(true);
+        TextArea forwardStatus = new TextArea("本地端口只绑定 127.0.0.1；每条转发只接受一个 TCP 连接。");
+        forwardStatus.setEditable(false);
+        forwardStatus.setWrapText(true);
+        forwardStatus.setPrefRowCount(3);
+        AtomicReference<UUID> openForwardId = new AtomicReference<>();
 
         Runnable update = () -> {
-            JsonObject runtime = runtimeManager.status();
-            JsonObject connectorStatus = connectorManager.status();
-            JsonObject account = accountClient.status();
+            JsonObject runtime = linkClientRuntime.status();
+            JsonObject account = hostAccountStatus();
             JsonObject subscription = subscriptions.status();
-            overall.setText(readinessText(runtime, connectorStatus, account, subscription));
-            runtimeState.setText("内置运行时：" + runtime.get("state").getAsString()
-                    + " · " + runtime.get("message").getAsString());
-            connectorState.setText("Connector：" + connectorStatus.get("state").getAsString()
-                    + " · 活跃隧道 " + connectorStatus.get("activeTunnels").getAsInt());
+            overall.setText(readinessText(runtime, account, subscription));
+            runtimeState.setText("Java 客户端：" + runtime.get("state").getAsString()
+                    + " · 活跃隧道 " + runtime.get("openTunnels").getAsInt()
+                    + " · 等待连接 " + runtime.get("pendingTunnels").getAsInt()
+                    + pathDiagnostic(runtime));
             accountState.setText("账号：" + account.get("state").getAsString()
                     + " · " + account.get("baseUrl").getAsString());
             subscriptionState.setText(subscriptionText(subscription));
             trial.setDisable(!"TRIAL_AVAILABLE".equals(subscription.get("state").getAsString()));
         };
 
-        Button save = new Button("保存高级配置");
+        Button save = new Button("保存 Relay 地址");
         save.setOnAction(event -> {
             try {
-                ConnectorConfiguration updated = new ConnectorConfiguration(
-                        path(connector.getText()), path(identity.getText()), path(agents.getText())).normalized();
-                updated.save(context.storage());
-                connectorManager.configure(updated);
+                LinkClientSettings.saveRelayUri(context.storage(), relayUri.getText());
+                linkClientRuntime.reset();
                 update.run();
-                context.showNotification("JLShell Link 配置已保存", NotificationLevel.INFO);
+                context.showNotification("JLShell Link Relay 地址已保存", NotificationLevel.INFO);
             } catch (RuntimeException error) {
                 overall.setText("配置无效：" + error.getMessage());
                 context.showNotification("JLShell Link 配置无效", NotificationLevel.ERROR);
             }
-        });
-        repair.setOnAction(event -> {
-            BundledRuntimeManager.PreparedRuntime prepared = runtimeManager.prepare();
-            ConnectorConfiguration.useBundledDefaults(context.storage());
-            ConnectorConfiguration defaults = ConnectorConfiguration.load(context.storage(), prepared).normalized();
-            connector.setText(text(defaults.connectorBinary()));
-            agents.setText(text(defaults.agentBundleDirectory()));
-            connectorManager.configure(defaults);
-            update.run();
         });
         refresh.setOnAction(event -> subscriptions.refresh().whenComplete((ignored, error) ->
                 javafx.application.Platform.runLater(update)));
         trial.setOnAction(event -> subscriptions.claimTrial(MachineFingerprint.current(),
                 context.accountSession().snapshot().deviceId()).whenComplete((ignored, error) ->
                 javafx.application.Platform.runLater(update)));
-        VBox advanced = new VBox(8, new Label("Connector 覆盖路径"), connector,
-                new Label("身份文件"), identity,
-                new Label("Agent 发布目录覆盖路径"), agents, save);
+        addGateway.setOnAction(event -> {
+            String requestedName = gatewayName.getText();
+            addGateway.setDisable(true);
+            enrollment.clear();
+            enrollment.setVisible(false);
+            enrollment.setManaged(false);
+            subscriptions.requireProgram("link.agent-deploy")
+                    .thenCompose(ignored -> v2AccountClient.createEnrollment(requestedName))
+                    .whenComplete((created, error) -> javafx.application.Platform.runLater(() -> {
+                        addGateway.setDisable(false);
+                        if (error != null) {
+                            enrollmentState.setText("创建网关注册令牌失败：" + rootMessage(error));
+                            return;
+                        }
+                        enrollmentState.setText("一次性注册令牌仅在这里显示，请按网站的 Java Agent 安装指引使用。");
+                        enrollment.setText(created.get("enrollmentToken").getAsString());
+                        enrollment.setVisible(true);
+                        enrollment.setManaged(true);
+                    }));
+        });
+        Runnable loadForwardAgents = () -> {
+            refreshForwardAgents.setDisable(true);
+            forwardStatus.setText("正在读取在线 Java 网关及访问策略…");
+            loadForwardAgents().whenComplete((agents, error) -> javafx.application.Platform.runLater(() -> {
+                refreshForwardAgents.setDisable(false);
+                if (error != null) {
+                    forwardAgent.getItems().clear();
+                    forwardStatus.setText("无法读取网关目录：" + rootMessage(error));
+                    return;
+                }
+                ForwardAgent selected = forwardAgent.getValue();
+                forwardAgent.getItems().setAll(agents);
+                forwardAgent.setValue(agents.stream().filter(item -> selected != null
+                        && item.agentId().equals(selected.agentId())).findFirst().orElse(null));
+                if (agents.isEmpty()) {
+                    forwardStatus.setText("没有在线且启用访问策略的 Link v2 网关。可在 Website 完成注册和目标规则配置。");
+                } else {
+                    forwardStatus.setText("选择网关并输入 Website 策略允许的目标 IP/端口，然后打开一次性本地 TCP 转发。");
+                }
+            }));
+        };
+        refreshForwardAgents.setOnAction(event -> loadForwardAgents.run());
+        openForward.setOnAction(event -> {
+            ForwardAgent selected = forwardAgent.getValue();
+            int targetPort;
+            try {
+                if (selected == null) throw new IllegalArgumentException("请先选择 Java 网关");
+                targetPort = Integer.parseInt(forwardTargetPort.getText().trim());
+                if (targetPort < 1 || targetPort > 65535) throw new IllegalArgumentException("目标端口超出范围");
+                new com.jlshell.link.core.model.TargetEndpoint(forwardTargetIp.getText().trim(), targetPort);
+            } catch (RuntimeException invalid) {
+                forwardStatus.setText("转发参数无效：" + invalid.getMessage());
+                return;
+            }
+            openForward.setDisable(true);
+            forwardStatus.setText("正在向 Website 重新申请目标授权并建立 WSS Relay 转发…");
+            subscriptions.requireProgramAndSession("link.tcp-tunnel")
+                    .thenCompose(ignored -> linkClientRuntime.openForward(selected.agentId(),
+                            forwardTargetIp.getText().trim(), targetPort))
+                    .whenComplete((opened, error) -> javafx.application.Platform.runLater(() -> {
+                        if (error != null) {
+                            openForward.setDisable(false);
+                            forwardStatus.setText("本地转发打开失败：" + rootMessage(error));
+                            return;
+                        }
+                        openForwardId.set(opened.id());
+                        closeForward.setDisable(false);
+                        forwardStatus.setText("本地转发已打开\n本机地址：" + opened.localHost() + ":" + opened.localPort()
+                                + "\n目标：" + opened.targetIp() + ":" + opened.targetPort()
+                                + "\n路径：" + opened.path() + " · 此转发只接受一个 TCP 连接。");
+                    }));
+        });
+        closeForward.setOnAction(event -> {
+            UUID id = openForwardId.getAndSet(null);
+            if (id == null) return;
+            closeForward.setDisable(true);
+            linkClientRuntime.closeForward(id).whenComplete((closed, error) ->
+                    javafx.application.Platform.runLater(() -> {
+                        openForward.setDisable(false);
+                        forwardStatus.setText(error != null ? "关闭本地转发失败：" + rootMessage(error)
+                                : Boolean.TRUE.equals(closed) ? "本地转发已关闭。" : "本地转发已自动结束。");
+                    }));
+        });
+        loadForwardAgents.run();
+        VBox advanced = new VBox(8, new Label("Link v2 WSS Relay 地址"), relayUri, save,
+                new Label("必须使用 wss://主机/link/v2/relay；客户端节点密钥和 TLS 身份由宿主加密存储管理。"));
         advanced.setPadding(new Insets(8));
         TitledPane advancedPane = new TitledPane("高级配置（一般无需修改）", advanced);
         advancedPane.setExpanded(false);
 
-        Label note = new Label("默认配置会自动解包并校验 Connector 与三平台 Agent。账号登录态由 JLShell 宿主统一管理，"
-                + "请先在“账号设置”中通过 Web 登录；进入 SSH 会话后按向导安装 Agent。");
+        Label note = new Label("SSH 路由由进程内 Java 客户端建立，使用 Website 在线 Agent 目录和每次连接重新签发的访问授权。"
+                + "当前桌面数据路径使用 WSS Relay；P2P 产品选路和跨平台 Java Agent 安装包仍在后续阶段。");
         note.setWrapText(true);
-        HBox runtimeActions = new HBox(8, repair);
-        VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState, connectorState,
-                new HBox(8, trial, refresh), runtimeActions, note, advancedPane);
+        VBox root = new VBox(10, title, overall, accountState, subscriptionState, runtimeState,
+                new HBox(8, trial, refresh), note,
+                new Label("添加 Java 网关"), new HBox(8, gatewayName, addGateway), enrollmentState,
+                enrollment, new Label("非 SSH TCP 本地转发"),
+                new HBox(8, forwardAgent, refreshForwardAgents),
+                new HBox(8, forwardTargetIp, forwardTargetPort), new HBox(8, openForward, closeForward),
+                forwardStatus, advancedPane);
         root.setPadding(new Insets(12));
         update.run();
         return root;
     }
 
     boolean settingsDependenciesReady() {
-        return runtimeManager != null && connectorManager != null
-                && accountClient != null && subscriptions != null && bindingStore != null;
+        return linkClientRuntime != null && v2AccountClient != null
+                && subscriptions != null && bindingStore != null;
     }
 
     private Node unavailableSettingsView() {
@@ -375,72 +427,91 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 new LinkBindingStore.SessionReference(null, null));
     }
 
-    private CompletableFuture<com.google.gson.JsonElement> agentInstallSpec(com.google.gson.JsonElement args) {
-        try {
-            if (args == null || !args.isJsonObject()) {
-                throw new IllegalArgumentException("platform and architecture are required");
-            }
-            JsonObject object = args.getAsJsonObject();
-            String platform = requiredString(object, "platform");
-            String architecture = requiredString(object, "architecture");
-            Path binary = connectorManager.agentBinary(platform, architecture);
-            long size = Files.size(binary);
-            if (size < 1 || size > MAX_AGENT_BYTES) {
-                throw new IllegalStateException("Agent binary is empty or exceeds 200 MiB");
-            }
-            JsonObject result = new JsonObject();
-            result.addProperty("platform", platform);
-            result.addProperty("architecture", architecture);
-            result.addProperty("path", binary.toString());
-            result.addProperty("size", size);
-            result.addProperty("sha256", sha256(binary));
-            return CompletableFuture.completedFuture(result);
-        } catch (Exception error) {
-            return CompletableFuture.failedFuture(error);
-        }
-    }
-
     JsonObject runtimeStatus() {
-        JsonObject runtime = runtimeManager.status();
-        JsonObject connector = connectorManager.status();
-        JsonObject account = accountClient.status();
-        boolean runtimeReady = runtime.get("available").getAsBoolean();
-        boolean connectorReady = connector.get("available").getAsBoolean();
-        boolean authenticated = "AUTHENTICATED".equals(account.get("state").getAsString());
+        JsonObject runtime = linkClientRuntime.status();
+        JsonObject account = hostAccountStatus();
         JsonObject subscription = subscriptions.status();
-        String state = !runtimeReady ? "RUNTIME_MISSING"
-                : !connectorReady ? "CONNECTOR_NOT_READY"
-                : !authenticated ? "SIGNED_OUT" : subscription.get("state").getAsString();
-        String nextAction = !runtimeReady ? "REINSTALL_OR_REPAIR_PLUGIN"
-                : !connectorReady ? "REPAIR_CONNECTOR"
-                : !authenticated ? "LOGIN" : switch (state) {
+        String state = !"AUTHENTICATED".equals(account.get("state").getAsString()) ? "SIGNED_OUT"
+                : !runtime.get("secureStorageAvailable").getAsBoolean() ? "SECURE_STORAGE_UNAVAILABLE"
+                : subscription.get("state").getAsString();
+        String nextAction = switch (state) {
                     case "READY" -> "OPEN_SESSION";
                     case "TRIAL_AVAILABLE" -> "START_TRIAL_OR_UPGRADE";
                     case "CHECKING" -> "REFRESH_SUBSCRIPTION";
+                    case "SIGNED_OUT" -> "LOGIN";
+                    case "SECURE_STORAGE_UNAVAILABLE" -> "ENABLE_HOST_SECURE_STORAGE";
                     default -> "CONTACT_ADMIN_OR_UPGRADE";
                 };
         JsonObject result = new JsonObject();
-        result.addProperty("available", runtimeReady && connectorReady && authenticated && "READY".equals(state));
+        result.addProperty("available", runtime.get("available").getAsBoolean() && "READY".equals(state));
         result.addProperty("state", state);
         result.addProperty("nextAction", nextAction);
-        if (connector.has("version")) result.add("version", connector.get("version").deepCopy());
+        result.addProperty("version", LinkPluginContract.VERSION);
         result.add("runtime", runtime.deepCopy());
-        result.add("connector", connector.deepCopy());
+        JsonObject retiredConnector = new JsonObject();
+        retiredConnector.addProperty("available", false);
+        retiredConnector.addProperty("state", "REPLACED_BY_JAVA_CLIENT");
+        result.add("connector", retiredConnector);
+        result.add("javaClient", runtime.deepCopy());
         result.add("account", account.deepCopy());
         result.add("subscription", subscription.deepCopy());
         return result;
     }
 
-    private static String readinessText(JsonObject runtime, JsonObject connector, JsonObject account,
-                                        JsonObject subscriptionStatus) {
-        if (!runtime.get("available").getAsBoolean()) {
-            return "需要修复：插件未包含完整运行时。请重新安装正式插件包，或点击重新准备运行时。";
+    private JsonObject hostAccountStatus() {
+        AccountSession session = context.accountSession().snapshot();
+        JsonObject value = new JsonObject();
+        value.addProperty("state", session.authenticated() ? "AUTHENTICATED" : "SIGNED_OUT");
+        value.addProperty("baseUrl", session.baseUrl() == null ? "" : session.baseUrl());
+        return value;
+    }
+
+    private static String pathDiagnostic(JsonObject runtime) {
+        if (!runtime.has("lastPath") || runtime.get("lastPath").isJsonNull()) {
+            return " · 尚无路径记录";
         }
-        if (!connector.get("available").getAsBoolean()) {
-            return "需要修复：Connector 尚未就绪。点击重新准备内置运行时后刷新状态。";
-        }
+        String path = runtime.get("lastPath").getAsString();
+        String outcome = runtime.get("lastPathOutcome").getAsString();
+        long elapsed = runtime.get("lastPathElapsedMillis").getAsLong();
+        String category = runtime.has("lastFailureCategory") && !runtime.get("lastFailureCategory").isJsonNull()
+                ? " · " + runtime.get("lastFailureCategory").getAsString() : "";
+        return " · 最近路径 " + path + "/" + outcome + " · " + elapsed + " ms" + category;
+    }
+
+    private CompletableFuture<List<ForwardAgent>> loadForwardAgents() {
+        return v2AccountClient.agents().thenCompose(agents -> {
+            List<CompletableFuture<ForwardAgent>> requests = new ArrayList<>();
+            for (com.google.gson.JsonElement item : agents) {
+                JsonObject agent = item.getAsJsonObject();
+                if (!"ONLINE".equals(jsonString(agent, "state"))
+                        || !com.jlshell.link.core.ProtocolVersion.V2.equals(jsonString(agent, "protocolVersion"))
+                        || jsonString(agent, "nodeKeyFingerprint").isBlank()) continue;
+                UUID id;
+                try { id = UUID.fromString(jsonString(agent, "agentId")); }
+                catch (RuntimeException invalid) { continue; }
+                requests.add(v2AccountClient.accessPolicy(id).thenApply(policy -> {
+                    if (!policy.has("enabled") || !policy.get("enabled").getAsBoolean()) return null;
+                    return new ForwardAgent(id.toString(), jsonString(agent, "name"),
+                            policy.has("version") ? policy.get("version").getAsLong() : 0);
+                }));
+            }
+            CompletableFuture<?>[] pending = requests.toArray(CompletableFuture[]::new);
+            return CompletableFuture.allOf(pending).thenApply(ignored -> requests.stream()
+                    .map(CompletableFuture::join).filter(java.util.Objects::nonNull).toList());
+        });
+    }
+
+    private static String jsonString(JsonObject object, String key) {
+        return object.has(key) && !object.get(key).isJsonNull() ? object.get(key).getAsString() : "";
+    }
+
+    private static String readinessText(JsonObject runtime, JsonObject account, JsonObject subscriptionStatus) {
         if (!"AUTHENTICATED".equals(account.get("state").getAsString())) {
             return "还差一步：登录 JLShell 账号。Session 会直接复用这里的登录态，不会重复登录。";
+        }
+        if (!runtime.get("available").getAsBoolean()) {
+            return "Java 客户端暂不可用：" + runtime.get("state").getAsString()
+                    + "。请确认宿主加密存储可用。";
         }
         String subscription = subscriptionStatus.get("state").getAsString();
         if (!"READY".equals(subscription)) {
@@ -453,7 +524,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                 default -> "正在检查套餐与插件策略，请稍后刷新状态。";
             };
         }
-        return "JLShell Link 已就绪。打开项目中的 SSH 会话即可检测并安装 Agent。";
+        return "JLShell Link 已就绪。项目 SSH 连接会通过进程内 Java 客户端建立 WSS Relay 隧道。";
     }
 
     private static String subscriptionText(JsonObject subscription) {
@@ -485,19 +556,8 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         return value;
     }
 
-    private static String text(Path path) {
-        return path == null ? "" : path.toString();
+    private record ForwardAgent(String agentId, String name, long policyVersion) {
+        @Override public String toString() { return name + " · 策略 v" + policyVersion; }
     }
 
-    private static Path path(String value) {
-        return value == null || value.isBlank() ? null : Path.of(value.trim());
-    }
-
-    private static String sha256(Path file) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        try (var input = new java.security.DigestInputStream(Files.newInputStream(file), digest)) {
-            input.transferTo(java.io.OutputStream.nullOutputStream());
-        }
-        return HexFormat.of().formatHex(digest.digest());
-    }
 }

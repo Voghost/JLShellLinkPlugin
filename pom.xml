@@ -16,10 +16,21 @@
         <module>link-plugin-distribution</module>
     </modules>
 
+    <repositories>
+        <repository>
+            <id>github</id>
+            <name>JLShell Link private Maven packages</name>
+            <url>https://maven.pkg.github.com/Voghost/JLShellLink</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
+
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <jlshell.plugin-api.version>1.4.0</jlshell.plugin-api.version>
+        <jlshell.plugin-api.version>1.5.0</jlshell.plugin-api.version>
+        <jlshell.link.version>0.1.2</jlshell.link.version>
         <javafx.version>21.0.5</javafx.version>
         <gson.version>2.11.0</gson.version>
         <junit.version>5.11.4</junit.version>
@@ -100,6 +111,44 @@
                                         <exclude>ch.qos.logback:*</exclude>
                                     </excludes>
                                 </artifactSet>
+                                <filters>
+                                    <filter>
+                                        <artifact>*:*</artifact>
+                                        <excludes>
+                                            <exclude>META-INF/versions/25/**</exclude>
+                                        </excludes>
+                                    </filter>
+                                </filters>
+                                <relocations>
+                                    <relocation>
+                                        <pattern>io.netty</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.netty</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>org.bouncycastle</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.bouncycastle</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>com.nimbusds</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.nimbusds</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>net.minidev</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.json</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>kcp</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.kcp</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>threadPool</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.kcp.threadPool</shadedPattern>
+                                    </relocation>
+                                    <relocation>
+                                        <pattern>internal</pattern>
+                                        <shadedPattern>com.jlshell.link.internal.kcp.internal</shadedPattern>
+                                    </relocation>
+                                </relocations>
                                 <transformers>
                                     <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                     <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
