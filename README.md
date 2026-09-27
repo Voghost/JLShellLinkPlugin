@@ -2,7 +2,7 @@
 
 `Voghost/JLShellLinkPlugin` 是 JLShell Link 的独立 Java 21 插件工程，只发布一个
 Program fat JAR，插件 ID 为 `com.jlshell.link.program`。插件使用 Plugin SDK 1.5.0 和
-JLShell Link Java Client 0.1.2；账号登录和 HTTP 请求由 JLShell 宿主提供。
+JLShell Link Java Client 0.1.3；账号登录和 HTTP 请求由 JLShell 宿主提供。
 
 SSH 建连前的隧道由进程内 Java 客户端创建。客户端代码及其 Netty、KCP、Bouncy Castle
 依赖会一起打入 fat JAR，并重定位到插件私有包名；宿主 SDK、JavaFX 和日志实现仍由宿主提供。
@@ -41,7 +41,7 @@ Program 插件设置提供“添加 Java 网关”入口，通过当前 JLShell 
 ## 构建与依赖
 
 Plugin SDK `net.oomn.jlshell:plugin-api` 和 `program-api` 1.5.0 从 Maven Central 获取。
-Link Java 制品 `com.jlshell.link:*:0.1.2` 从 `Voghost/JLShellLink` 的 GitHub Packages 获取。
+Link Java 制品 `com.jlshell.link:*:0.1.3` 从 `Voghost/JLShellLink` 的 GitHub Packages 获取。
 本地 Maven `settings.xml` 需要配置 `github` server ID、GitHub 用户名和具有 `read:packages`
 权限的只读令牌；令牌不得写进仓库。GitHub Actions 使用仓库授权的 `GITHUB_TOKEN`。
 
