@@ -16,6 +16,16 @@
         <module>link-plugin-distribution</module>
     </modules>
 
+    <repositories>
+        <repository>
+            <id>github</id>
+            <name>JLShell Link private Maven packages</name>
+            <url>https://maven.pkg.github.com/Voghost/JLShellLink</url>
+            <releases><enabled>true</enabled></releases>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
+
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
