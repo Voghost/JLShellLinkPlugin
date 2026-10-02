@@ -96,6 +96,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp link-program-plugin/target/*-fat.jar dist/jlshell-link-plugin.jar
+          cp link-program-plugin/target/bom.json dist/dependencies.cyclonedx.json
           python3 - <<'PY'
           import hashlib
           import json
@@ -115,8 +116,10 @@ jobs:
                   raise SystemExit(f"Missing pinned Maven property: {name}")
               return value.text.strip()
 
-          artifact = Path("dist/jlshell-link-plugin.jar")
-          digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+          artifacts = [
+              Path("dist/jlshell-link-plugin.jar"),
+              Path("dist/dependencies.cyclonedx.json"),
+          ]
           tag = os.environ["RELEASE_TAG"]
           manifest = {
               "schemaVersion": 1,
@@ -131,11 +134,12 @@ jobs:
                   "javafx": version("javafx.version"),
                   "gson": version("gson.version"),
               },
+              "dependencySbomFormat": "CycloneDX JSON",
               "artifacts": [{
                   "name": artifact.name,
                   "sizeBytes": artifact.stat().st_size,
-                  "sha256": digest,
-              }],
+                  "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+              } for artifact in artifacts],
           }
           Path("dist/release-provenance.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
