@@ -31,6 +31,15 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn -B -ntp verify
+      - name: Verify Plugin CycloneDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          bom=link-program-plugin/target/bom.json
+          if [[ ! -f "$bom" ]] || ! python3 -c 'import json,sys; b=json.load(open(sys.argv[1], encoding="utf-8")); assert isinstance(b,dict) and b.get("bomFormat")=="CycloneDX" and isinstance(b.get("components"),list)' "$bom"; then
+            echo "Missing or invalid Plugin CycloneDX SBOM: $bom" >&2
+            exit 1
+          fi
       - name: Verify host API is excluded from the fat JAR
         shell: bash
         run: |

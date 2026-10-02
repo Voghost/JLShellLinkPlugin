@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -21,6 +23,23 @@ jobs:
           server-id: github
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
+      - name: Validate tag and require its commit on main
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_version="${RELEASE_TAG#v}"
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$ ]]; then
+            echo 'Release tag must use strict SemVer with a v prefix.' >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$SOURCE_REVISION" FETCH_HEAD; then
+            echo 'Plugin releases must come from a commit already contained in main.' >&2
+            exit 1
+          fi
       - name: Validate release notes
         shell: bash
         run: |
@@ -70,11 +89,65 @@ jobs:
           fi
       - name: Prepare release assets
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REVISION: ${{ github.sha }}
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp link-program-plugin/target/*-fat.jar dist/jlshell-link-plugin.jar
+          cp link-program-plugin/target/bom.json dist/dependencies.cyclonedx.json
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          namespace = "{http://maven.apache.org/POM/4.0.0}"
+          pom = ET.parse("pom.xml").getroot()
+          properties = pom.find(f"{namespace}properties")
+          if properties is None:
+              raise SystemExit("Missing Maven properties in pom.xml")
+
+          def version(name: str) -> str:
+              value = properties.find(f"{namespace}{name}")
+              if value is None or not value.text:
+                  raise SystemExit(f"Missing pinned Maven property: {name}")
+              return value.text.strip()
+
+          artifacts = [
+              Path("dist/jlshell-link-plugin.jar"),
+              Path("dist/dependencies.cyclonedx.json"),
+          ]
+          tag = os.environ["RELEASE_TAG"]
+          manifest = {
+              "schemaVersion": 1,
+              "product": "jlshell-link-plugin",
+              "version": tag.removeprefix("v"),
+              "sourceRevision": os.environ["SOURCE_REVISION"],
+              "releaseTag": tag,
+              "javaMajorVersion": 21,
+              "dependencies": {
+                  "jlshellPluginApi": version("jlshell.plugin-api.version"),
+                  "jlshellLinkJava": version("jlshell.link.version"),
+                  "javafx": version("javafx.version"),
+                  "gson": version("gson.version"),
+              },
+              "dependencySbomFormat": "CycloneDX JSON",
+              "artifacts": [{
+                  "name": artifact.name,
+                  "sizeBytes": artifact.stat().st_size,
+                  "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+              } for artifact in artifacts],
+          }
+          Path("dist/release-provenance.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
           cd dist
-          sha256sum *.jar > SHA256SUMS
+          sha256sum jlshell-link-plugin.jar release-provenance.json > SHA256SUMS
       - name: Create private GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
