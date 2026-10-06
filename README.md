@@ -27,7 +27,7 @@ SSH 建连前的隧道由进程内 Java 客户端创建。客户端代码及其 
 
 Program 插件设置提供“添加 Java 网关”入口，通过当前 JLShell 账号创建 Website 一次性 enrollment token。令牌仅在创建后显示给用户，不写入插件设置或日志。然后按 Website 的 Java Agent 安装说明在 C 上完成注册。
 
-自动 SSH 上传、注册、系统服务安装及跨平台 Java Agent 制品仍需 Link `DIST-01` 交付后完成；插件目前不再回退到旧 Rust Agent 部署流程。当前分支的 P2P 代码已通过本地模块验证，跨公网 A/C 的正式产品路径、UDP 阻断时降级及权限角色仍待部署验收；不能用旧原型的网络结果代替本分支验收。
+新增 Java 专用的可选 SSH 安装面板：独立公钥验签、包摘要核对、随机暂存/SFTP 上传、文件令牌注册、服务安装/失败恢复及升级防降级；离线 ZIP 使用同一验证。需要 Link 签名平台包、新服务脚本和 Website 验签接口合入并发布。真实平台安装/升级验收仍待完成；插件不再回退到旧 Rust Agent 部署流程。当前分支的 P2P 代码已通过本地模块验证，跨公网 A/C 的正式产品路径、UDP 阻断时降级及权限角色仍待部署验收；不能用旧原型的网络结果代替本分支验收。
 
 ## 数据存储与安全边界
 
@@ -58,3 +58,21 @@ link-program-plugin/target/link-program-plugin-<version>-fat.jar
 `link-plugin-distribution/target/plugins/` 汇集唯一的 Program 插件 JAR。CI 会确认 Java
 Link 客户端和已重定位网络依赖存在、旧 Rust 运行时没有进入发行包、宿主 API 没有重复打包。
 插件不会发布到 Maven Central。
+
+
+### Java Agent 签名安装配置
+
+在插件高级设置中填写可信发布公钥（独立核对的 Ed25519 SPKI DER base64，可逗号分隔）。
+不能从下载清单自动添加信任，也不复用节点或 TLS 公钥。将发行 ZIP、同名 manifest 和 signature
+放在同一目录，通过已有 SSH 会话的 Link 面板选择 ZIP；确认弹窗会显示版本、平台和发布公钥指纹。
+填写已在远端准备好的 Ed25519 TLS identity、600 权限密码文件和目标白名单路径。
+首次注册再填 Website 创建的 Agent ID 和一次性令牌；升级时留空注册信息。
+令牌仅通过 SFTP 私有临时文件传递，不保存到插件配置、不进入命令参数或日志。
+
+Linux 需要 systemd 用户会话，macOS LaunchAgent 需要登录会话，Windows 需要管理员 SSH。
+首次注册保留节点身份，即使服务安装失败也不会删除；令牌消耗后不能重复使用。
+升级必须能核验已安装的 release manifest/signature，旧未签名安装不能自动信任。
+服务进程启动检查和 Website 在线/业务恢复验收分别记录。恢复失败需人工核对，不宣称自动恢复成功。
+
+验证：新增验签/摘要/非法 ZIP/显式确认/令牌边界 4 项本机通过，JDK 27 编译 Java 21 字节码；
+默认 0.1.3 私有依赖本机读取返回 401，完整构建由三平台 Java 21 CI 验收。

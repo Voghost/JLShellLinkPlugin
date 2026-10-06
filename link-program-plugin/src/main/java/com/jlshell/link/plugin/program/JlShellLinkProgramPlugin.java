@@ -136,7 +136,11 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
                     bindingStore, v2AccountClient, subscriptions, linkClientRuntime)));
         }
         if (context.sessionIntegration().available()) {
-            registrations.add(context.sessionIntegration().register(new LinkSessionStatusContribution()));
+            registrations.add(context.sessionIntegration().register(new LinkSessionStatusContribution(
+                    () -> context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", ""),
+                    () -> context.accountSession().snapshot().baseUrl(),
+                    () -> LinkClientSettings.relayUri(context.storage()).replace("/link/v2/relay", "/link/v2/control"),
+                    () -> LinkClientSettings.stunServers(context.storage()))));
         }
         if (context.hostEvents().available()) {
             registrations.add(context.hostEvents().subscribe(SessionOpenedEvent.class, event -> {
@@ -223,6 +227,18 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         enrollmentState.setWrapText(true);
         TextField relayUri = new TextField(LinkClientSettings.relayUri(context.storage()));
         relayUri.setPromptText(LinkClientSettings.DEFAULT_RELAY_URI);
+        TextArea publisherKeys = new TextArea(context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", ""));
+        publisherKeys.setPrefRowCount(2);
+        publisherKeys.setPromptText("发行方提供的 Ed25519 SPKI DER base64 公钥；多个公钥用逗号分隔");
+        Button savePublisherKeys = new Button("保存可信发布公钥");
+        savePublisherKeys.setDisable(context.storage() == null);
+        savePublisherKeys.setOnAction(event -> {
+            try {
+                var keys = com.jlshell.link.plugin.program.session.SignedAgentPackage.parseTrustedKeys(publisherKeys.getText());
+                context.storage().put("link.agent.publisher-public-keys", String.join(",", keys));
+                context.showNotification("可信发布公钥已保存", NotificationLevel.INFO);
+            } catch (Exception invalid) { context.showNotification("发布公钥无效，请核对 Ed25519 公钥格式", NotificationLevel.ERROR); }
+        });
         TextField stunServers = new TextField(LinkClientSettings.stunServers(context.storage()));
         stunServers.setPromptText("可选：203.0.113.10:3478,[2001:db8::10]:3478");
         ComboBox<ConnectPolicy> connectPolicy = new ComboBox<>();
@@ -374,6 +390,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         });
         loadForwardAgents.run();
         VBox advanced = new VBox(8, new Label("连接策略"), connectPolicy,
+                new Label("Agent 发布公钥（从发行方独立核对，不能从下载清单自动信任）"), publisherKeys, savePublisherKeys,
                 new Label("AUTO 会并行准备直连与 Relay，先完成安全握手的一条路径胜出；DIRECT_ONLY 和 RELAY_ONLY 用于诊断。"),
                 new Label("Link v2 WSS Relay 地址"), relayUri,
                 new Label("可选 STUN 服务器（数值 IP:端口，多个用逗号分隔，最多 4 个）"), stunServers,

@@ -17,6 +17,19 @@ import javafx.scene.layout.VBox;
  * 会话级只读状态入口。Program 的账号、Relay 和 Agent 配置仍只出现在 Program 设置/项目管理页。
  */
 public final class LinkSessionStatusContribution implements ProgramSessionContribution {
+    private final java.util.function.Supplier<String> publisherKeys;
+    private final java.util.function.Supplier<String> website;
+    private final java.util.function.Supplier<String> controlWss;
+    private final java.util.function.Supplier<String> stunServers;
+
+    public LinkSessionStatusContribution() { this(() -> "", () -> "", () -> "", () -> ""); }
+    public LinkSessionStatusContribution(java.util.function.Supplier<String> publisherKeys,
+            java.util.function.Supplier<String> website, java.util.function.Supplier<String> controlWss,
+            java.util.function.Supplier<String> stunServers) {
+        this.publisherKeys = publisherKeys; this.website = website; this.controlWss = controlWss;
+        this.stunServers = stunServers;
+    }
+
 
     @Override public String displayName() { return "JLShell Link"; }
 
@@ -38,7 +51,7 @@ public final class LinkSessionStatusContribution implements ProgramSessionContri
         Button refresh = new Button("刷新状态");
         refresh.setOnAction(event -> load(context, status, refresh));
         load(context, status, refresh);
-        return new VBox(8, title, status, refresh);
+        return new VBox(8, title, status, refresh, AgentInstallPane.create(context, publisherKeys, website, controlWss, stunServers));
     }
 
     private void load(PluginContext context, Label status, Button refresh) {
