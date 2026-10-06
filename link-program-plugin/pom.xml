@@ -97,6 +97,7 @@
                 </executions>
                 <configuration>
                     <outputFormat>all</outputFormat>
+                    <skipNotDeployed>false</skipNotDeployed>
                     <includeTestScope>false</includeTestScope>
                     <includeProvidedScope>false</includeProvidedScope>
                     <includeLicenseText>false</includeLicenseText>

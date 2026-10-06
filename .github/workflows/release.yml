@@ -120,6 +120,9 @@ jobs:
               Path("dist/jlshell-link-plugin.jar"),
               Path("dist/dependencies.cyclonedx.json"),
           ]
+          sbom = json.loads(Path("dist/dependencies.cyclonedx.json").read_text(encoding="utf-8"))
+          if sbom.get("bomFormat") != "CycloneDX" or not isinstance(sbom.get("components"), list):
+              raise SystemExit("Missing or invalid Plugin CycloneDX SBOM")
           tag = os.environ["RELEASE_TAG"]
           manifest = {
               "schemaVersion": 1,
@@ -147,7 +150,7 @@ jobs:
           )
           PY
           cd dist
-          sha256sum jlshell-link-plugin.jar release-provenance.json > SHA256SUMS
+          sha256sum jlshell-link-plugin.jar dependencies.cyclonedx.json release-provenance.json > SHA256SUMS
       - name: Create private GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
