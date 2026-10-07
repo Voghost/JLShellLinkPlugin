@@ -22,6 +22,11 @@
             <groupId>com.jlshell.link</groupId>
             <artifactId>link-client</artifactId>
             <version>${jlshell.link.version}</version>
+        <exclusions>
+                <!-- ICE uses host/STUN candidates only; no UPnP or native loader. -->
+                <exclusion><groupId>org.bitlet</groupId><artifactId>weupnp</artifactId></exclusion>
+                <exclusion><groupId>net.java.dev.jna</groupId><artifactId>jna</artifactId></exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>net.oomn.jlshell</groupId>

@@ -1,7 +1,7 @@
 # JLShell Link Plugin
 
 `Voghost/JLShellLinkPlugin` 是 JLShell Link 的独立 Java 21 插件工程，只发布一个
-Program fat JAR，插件 ID 为 `com.jlshell.link.program`。插件使用 Plugin SDK 1.5.0 和
+Program fat JAR，最低宿主版本为 0.1.67（包含 SDK 1.5.0 对应的 Link v2 路由能力），插件 ID 为 `com.jlshell.link.program`。插件使用 Plugin SDK 1.5.0 和
 JLShell Link Java Client 0.1.3；账号登录和 HTTP 请求由 JLShell 宿主提供。
 
 SSH 建连前的隧道由进程内 Java 客户端创建。客户端代码及其 Netty、KCP、Bouncy Castle

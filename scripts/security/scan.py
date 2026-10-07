@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.request
+from licenses import inventory
 
 VERSION = '0.75.0'
 BINARIES = {
@@ -126,6 +127,11 @@ def main():
                     bom = json.loads(path.read_text())
                     if bom.get('bomFormat') != 'CycloneDX' or not isinstance(bom.get('components'), list):
                         raise ValueError('Invalid CycloneDX delivery inventory')
+                if kind == 'sbom':
+                    licenses = inventory(bom)
+                    report['checks'].append({'type': 'licenses', 'input': path.name,
+                                             'sha256': digest(path), **licenses})
+                    failed |= bool(licenses['blockingComponents'])
                 data = run_scan(binary, kind, path, raw, cache, 'vuln')
                 findings = [{'id': v['VulnerabilityID'], 'package': v['PkgName'],
                              'installed': v['InstalledVersion'], 'fixed': v.get('FixedVersion', ''),

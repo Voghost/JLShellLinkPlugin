@@ -137,7 +137,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         }
         if (context.sessionIntegration().available()) {
             registrations.add(context.sessionIntegration().register(new LinkSessionStatusContribution(
-                    () -> context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", ""),
+                    () -> AgentPublisherTrust.configuredOrDefault(context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", "")),
                     () -> context.accountSession().snapshot().baseUrl(),
                     () -> LinkClientSettings.relayUri(context.storage()).replace("/link/v2/relay", "/link/v2/control"),
                     () -> LinkClientSettings.stunServers(context.storage()))));
@@ -227,7 +227,7 @@ public final class JlShellLinkProgramPlugin implements JlShellProgramPlugin {
         enrollmentState.setWrapText(true);
         TextField relayUri = new TextField(LinkClientSettings.relayUri(context.storage()));
         relayUri.setPromptText(LinkClientSettings.DEFAULT_RELAY_URI);
-        TextArea publisherKeys = new TextArea(context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", ""));
+        TextArea publisherKeys = new TextArea(AgentPublisherTrust.configuredOrDefault(context.storage() == null ? "" : context.storage().get("link.agent.publisher-public-keys", "")));
         publisherKeys.setPrefRowCount(2);
         publisherKeys.setPromptText("发行方提供的 Ed25519 SPKI DER base64 公钥；多个公钥用逗号分隔");
         Button savePublisherKeys = new Button("保存可信发布公钥");
