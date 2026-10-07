@@ -31,6 +31,15 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn -B -ntp verify
+      - name: Enforce plugin delivery vulnerability and secret gates
+        if: runner.os == 'Linux'
+        run: python3 scripts/security/scan.py --secrets --sbom link-program-plugin/target/bom.json --output security-report.json
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: plugin-delivery-security
+          path: security-report.json
+          if-no-files-found: ignore
       - name: Verify Plugin CycloneDX SBOM
         shell: bash
         run: |
