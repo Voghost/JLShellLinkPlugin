@@ -1,6 +1,5 @@
 package com.jlshell.link.plugin.program;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 /** Official publisher anchor ships independently of downloadable Agent manifests. */
@@ -15,7 +14,7 @@ final class AgentPublisherTrust {
             String value = new String(stream.readAllBytes(), StandardCharsets.US_ASCII).trim();
             var keys = com.jlshell.link.plugin.program.session.SignedAgentPackage.parseTrustedKeys(value);
             return String.join(",", keys);
-        } catch (IOException | IllegalArgumentException invalid) {
+        } catch (Exception invalid) {
             throw new IllegalStateException("官方 Agent 发布公钥无效", invalid);
         }
     }
