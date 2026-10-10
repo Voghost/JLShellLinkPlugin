@@ -31,6 +31,18 @@ python3 scripts/security/scan.py --secrets --sbom path/to/bom.json --output secu
 
 传入文件必须由当前候选构建生成。扫描通过只说明当前数据库和扫描规则未发现阻断项，不代表许可审核、综合业务验收或正式发行已经完成。
 
+## 固定内部制品的独立构建验收（DIST-02）
+
+CI 的 `clean-link-integration` 单独使用全新 Maven 仓库，不加载依赖缓存，也不访问相邻 Link 源码。`.github/link-integration-revision` 固定已实际发布的上游完整提交；版本由提交生成，不能填浮动 SNAPSHOT 或 `latest`。首次引用为 `a1dc176438770398856f634885ef2b5fb071c5eb`，由 [Link 发布 run 38049443725](https://github.com/Voghost/JLShellLink/actions/runs/38049443725) 实际发布。
+
+构建执行 Java 21 完整 `clean verify`，独立读取所下载 core/transport/client JAR 的来源 manifest，拒绝缺失、混用来源、重复 revision 字段或符号链接；归档版本、来源、大小和 SHA-256，以及实际 SBOM/安全门禁汇总。凭据仅由既有 GitHub Actions 包读取权限提供，不归档 Maven settings 或完整仓库。此 job 不发布插件或部署生产；常规三平台仍验证 POM 固定的 0.1.3。下一次切换内部候选先完成上游实际发布，再通过 PR 更新 revision 文件。
+
+构建与来源校验通过不代表真实桌面、网络、平台安装或正式发行通过；这些按第 10 章另行实测。检查器的离线边界验证：
+
+```sh
+python3 scripts/test-integration-artifacts.py
+```
+
 ## 许可覆盖
 
 策略位于 `scripts/security/licenses.py`。内部 JLShell 坐标单独标为内部组件，不虚构其开源许可证。

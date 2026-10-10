@@ -10,6 +10,59 @@ permissions:
   packages: read
 
 jobs:
+  clean-link-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+      - name: Resolve published immutable Link integration version
+        id: link
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(cat .github/link-integration-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          printf 'revision=%s\nversion=0.0.0-internal.g%s\n' "$revision" "$revision" >> "$GITHUB_OUTPUT"
+      - name: Verify provenance checker boundaries
+        run: python3 scripts/test-integration-artifacts.py
+      - name: Build plugin with an empty Maven repository
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINK_VERSION: ${{ steps.link.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="$RUNNER_TEMP/link-integration-m2"
+          [[ ! -e "$repository" ]]
+          mvn -B -ntp clean verify "-Dmaven.repo.local=$repository" "-Djlshell.link.version=$LINK_VERSION"
+      - name: Verify exact downloaded library source and hashes
+        env:
+          LINK_REVISION: ${{ steps.link.outputs.revision }}
+        run: >-
+          python3 scripts/verify-integration-artifacts.py
+          --repository "$RUNNER_TEMP/link-integration-m2"
+          --revision "$LINK_REVISION"
+          --output link-integration-provenance.json
+      - name: Enforce integration delivery gates
+        run: >-
+          python3 scripts/security/scan.py --secrets
+          --sbom link-program-plugin/target/bom.json --output integration-security-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-clean-link-integration
+          path: |
+            link-integration-provenance.json
+            integration-security-report.json
+            link-program-plugin/target/bom.json
+          if-no-files-found: ignore
   build:
     strategy:
       fail-fast: false
