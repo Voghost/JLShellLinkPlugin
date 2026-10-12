@@ -116,6 +116,13 @@
                                         <artifact>*:*</artifact>
                                         <excludes>
                                             <exclude>META-INF/versions/25/**</exclude>
+                                            <!-- Dependency signatures cannot survive shading/relocation. -->
+                                            <exclude>META-INF/*.SF</exclude>
+                                            <exclude>META-INF/*.RSA</exclude>
+                                            <exclude>META-INF/*.DSA</exclude>
+                                            <exclude>META-INF/*.EC</exclude>
+                                            <exclude>META-INF/SIG-*</exclude>
+                                            <exclude>META-INF/INDEX.LIST</exclude>
                                         </excludes>
                                     </filter>
                                 </filters>

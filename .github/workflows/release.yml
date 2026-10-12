@@ -80,6 +80,7 @@ jobs:
         shell: bash
         run: |
           jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          java scripts/VerifyPluginJar.java "$jar_file"
           for required in \
             META-INF/jlshell-plugin.json \
             com/jlshell/link/client/LinkClientEngine.class \

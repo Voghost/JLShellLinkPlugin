@@ -42,6 +42,11 @@ jobs:
           repository="$RUNNER_TEMP/link-integration-m2"
           [[ ! -e "$repository" ]]
           mvn -B -ntp clean verify "-Dmaven.repo.local=$repository" "-Djlshell.link.version=$LINK_VERSION"
+      - name: Verify shaded candidate with the JVM archive verifier
+        shell: bash
+        run: |
+          jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          java scripts/VerifyPluginJar.java "$jar_file"
       - name: Verify exact downloaded library source and hashes
         env:
           LINK_REVISION: ${{ steps.link.outputs.revision }}
@@ -147,6 +152,7 @@ jobs:
         shell: bash
         run: |
           jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          java scripts/VerifyPluginJar.java "$jar_file"
           if jar tf "$jar_file" | grep -q '^com/jlshell/plugin/api/'; then
             echo "Host Plugin API leaked into $jar_file" >&2
             exit 1
