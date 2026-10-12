@@ -140,3 +140,36 @@ jobs:
             echo "Distribution must contain exactly one Program plugin JAR" >&2
             exit 1
           fi
+      - name: Record installable candidate hashes and source
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+          CANDIDATE_PLATFORM: ${{ matrix.runner }}
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('link-program-plugin/target')
+          jars = list(root.glob('*-fat.jar'))
+          if len(jars) != 1:
+              raise SystemExit('Expected exactly one installable Program plugin')
+          paths = [jars[0], root / 'bom.json']
+          record = {
+              'schemaVersion': 1,
+              'scope': 'private-ci-candidate-not-stable-release',
+              'sourceRevision': os.environ['SOURCE_REVISION'],
+              'platform': os.environ['CANDIDATE_PLATFORM'],
+              'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                         'size': p.stat().st_size} for p in paths],
+          }
+          (root / 'candidate-provenance.json').write_text(json.dumps(record, indent=2) + '\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-installable-candidate-${{ matrix.runner }}
+          path: |
+            link-program-plugin/target/*-fat.jar
+            link-program-plugin/target/bom.json
+            link-program-plugin/target/candidate-provenance.json
+          if-no-files-found: error
+          retention-days: 14
