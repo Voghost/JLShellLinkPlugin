@@ -58,6 +58,15 @@ jobs:
             echo "Release notes contain a placeholder; document the actual changes: $notes_file" >&2
             exit 1
           fi
+      - name: Pin reviewed Link integration for prereleases
+        if: contains(github.ref_name, '-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(cat .github/link-integration-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set-property -Dproperty=jlshell.link.version \
+            "-DnewVersion=0.0.0-internal.g$revision" -DgenerateBackupPoms=false
       - name: Test and package
         shell: bash
         env:
@@ -67,6 +76,13 @@ jobs:
           release_version="${GITHUB_REF_NAME#v}"
           mvn -B -ntp versions:set -DnewVersion="$release_version" -DgenerateBackupPoms=false
           mvn -B -ntp verify
+      - name: Verify prerelease downloaded Link provenance
+        if: contains(github.ref_name, '-')
+        shell: bash
+        run: |
+          revision=$(cat .github/link-integration-revision)
+          python3 scripts/verify-integration-artifacts.py --repository "$HOME/.m2/repository" \
+            --revision "$revision" --output prerelease-link-provenance.json
       - name: Enforce plugin delivery vulnerability and secret gates
         if: runner.os == 'Linux'
         run: python3 scripts/security/scan.py --secrets --sbom link-program-plugin/target/bom.json --output security-report.json
@@ -175,9 +191,11 @@ jobs:
             echo "No plugin release files were produced" >&2
             exit 1
           fi
+          flags=()
+          if [[ "$release_version" == *-* ]]; then flags+=(--prerelease --latest=false); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file"
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file" "${flags[@]}"
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$notes_file" "${flags[@]}"
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
