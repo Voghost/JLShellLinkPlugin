@@ -63,6 +63,42 @@ jobs:
             integration-security-report.json
             link-program-plugin/target/bom.json
           if-no-files-found: ignore
+      - name: Record installable integration candidate
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('link-program-plugin/target')
+          jars = list(root.glob('*-fat.jar'))
+          if len(jars) != 1:
+              raise SystemExit('Expected exactly one installable integration plugin')
+          libraries = json.loads(Path('link-integration-provenance.json').read_text())
+          paths = [jars[0], root / 'bom.json']
+          record = {
+              'schemaVersion': 1,
+              'scope': 'private-ci-integration-candidate-not-stable-release',
+              'sourceRevision': os.environ['SOURCE_REVISION'],
+              'linkSourceRevision': libraries['linkSourceRevision'],
+              'linkVersion': libraries['linkVersion'],
+              'platform': 'java21-portable',
+              'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                         'size': p.stat().st_size} for p in paths],
+          }
+          (root / 'candidate-provenance.json').write_text(json.dumps(record, indent=2) + '\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-installable-link-integration-candidate
+          path: |
+            link-program-plugin/target/*-fat.jar
+            link-program-plugin/target/bom.json
+            link-program-plugin/target/candidate-provenance.json
+            link-integration-provenance.json
+          if-no-files-found: error
+          retention-days: 14
   build:
     strategy:
       fail-fast: false
@@ -83,7 +119,12 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mvn -B -ntp verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(cat .github/link-integration-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          mvn -B -ntp verify "-Djlshell.link.version=0.0.0-internal.g$revision"
       - name: Enforce plugin delivery vulnerability and secret gates
         if: runner.os == 'Linux'
         run: python3 scripts/security/scan.py --secrets --sbom link-program-plugin/target/bom.json --output security-report.json
@@ -159,6 +200,8 @@ jobs:
               'scope': 'private-ci-candidate-not-stable-release',
               'sourceRevision': os.environ['SOURCE_REVISION'],
               'platform': os.environ['CANDIDATE_PLATFORM'],
+              'linkSourceRevision': Path('.github/link-integration-revision').read_text().strip(),
+              'linkVersion': '0.0.0-internal.g' + Path('.github/link-integration-revision').read_text().strip(),
               'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
                          'size': p.stat().st_size} for p in paths],
           }
