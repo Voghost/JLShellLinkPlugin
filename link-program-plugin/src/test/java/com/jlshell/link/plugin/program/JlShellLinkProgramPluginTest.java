@@ -53,12 +53,15 @@ class JlShellLinkProgramPluginTest {
         Capability capability = registry.resolve(LinkPluginContract.RUNTIME_STATUS_CAPABILITY).orElseThrow();
         var result = capability.handler().invoke(JsonNull.INSTANCE, null).join().getAsJsonObject();
         assertThat(result.get("available").getAsBoolean()).isFalse();
-        assertThat(result.get("state").getAsString())
-                .isIn("RUNTIME_MISSING", "CONNECTOR_NOT_READY", "SIGNED_OUT");
-        assertThat(result.has("version")).isTrue();
+        assertThat(result.get("state").getAsString()).isEqualTo("SIGNED_OUT");
+        assertThat(result.get("version").getAsString()).isEqualTo(LinkPluginContract.VERSION);
         assertThat(result.getAsJsonObject("runtime").get("state").getAsString())
                 .as(result.getAsJsonObject("runtime").toString())
-                .isIn("BUNDLE_MISSING", "READY");
+                .isEqualTo("SIGNED_OUT");
+        assertThat(result.getAsJsonObject("connector").get("state").getAsString())
+                .isEqualTo("REPLACED_BY_JAVA_CLIENT");
+        assertThat(result.getAsJsonObject("javaClient").get("state").getAsString())
+                .isEqualTo("SIGNED_OUT");
         assertThat(context.connectionIntegration.contribution).isNotNull();
 
         plugin.deactivate();

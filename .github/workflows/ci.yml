@@ -7,8 +7,103 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
+  clean-link-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+      - name: Resolve published immutable Link integration version
+        id: link
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(cat .github/link-integration-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          printf 'revision=%s\nversion=0.0.0-internal.g%s\n' "$revision" "$revision" >> "$GITHUB_OUTPUT"
+      - name: Verify provenance checker boundaries
+        run: python3 scripts/test-integration-artifacts.py
+      - name: Build plugin with an empty Maven repository
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINK_VERSION: ${{ steps.link.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="$RUNNER_TEMP/link-integration-m2"
+          [[ ! -e "$repository" ]]
+          mvn -B -ntp clean verify "-Dmaven.repo.local=$repository" "-Djlshell.link.version=$LINK_VERSION"
+      - name: Verify shaded candidate with the JVM archive verifier
+        shell: bash
+        run: |
+          jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          java scripts/VerifyPluginJar.java "$jar_file"
+      - name: Verify exact downloaded library source and hashes
+        env:
+          LINK_REVISION: ${{ steps.link.outputs.revision }}
+        run: >-
+          python3 scripts/verify-integration-artifacts.py
+          --repository "$RUNNER_TEMP/link-integration-m2"
+          --revision "$LINK_REVISION"
+          --output link-integration-provenance.json
+      - name: Enforce integration delivery gates
+        run: >-
+          python3 scripts/security/scan.py --secrets
+          --sbom link-program-plugin/target/bom.json --output integration-security-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: plugin-clean-link-integration
+          path: |
+            link-integration-provenance.json
+            integration-security-report.json
+            link-program-plugin/target/bom.json
+          if-no-files-found: ignore
+      - name: Record installable integration candidate
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('link-program-plugin/target')
+          jars = list(root.glob('*-fat.jar'))
+          if len(jars) != 1:
+              raise SystemExit('Expected exactly one installable integration plugin')
+          libraries = json.loads(Path('link-integration-provenance.json').read_text())
+          paths = [jars[0], root / 'bom.json']
+          record = {
+              'schemaVersion': 1,
+              'scope': 'private-ci-integration-candidate-not-stable-release',
+              'sourceRevision': os.environ['SOURCE_REVISION'],
+              'linkSourceRevision': libraries['linkSourceRevision'],
+              'linkVersion': libraries['linkVersion'],
+              'platform': 'java21-portable',
+              'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                         'size': p.stat().st_size} for p in paths],
+          }
+          (root / 'candidate-provenance.json').write_text(json.dumps(record, indent=2) + '\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-installable-link-integration-candidate
+          path: |
+            link-program-plugin/target/*-fat.jar
+            link-program-plugin/target/bom.json
+            link-program-plugin/target/candidate-provenance.json
+            link-integration-provenance.json
+          if-no-files-found: error
+          retention-days: 14
   build:
     strategy:
       fail-fast: false
@@ -22,12 +117,42 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
       - name: Test and package plugin
-        run: mvn -B -ntp verify
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(cat .github/link-integration-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          mvn -B -ntp verify "-Djlshell.link.version=0.0.0-internal.g$revision"
+      - name: Enforce plugin delivery vulnerability and secret gates
+        if: runner.os == 'Linux'
+        run: python3 scripts/security/scan.py --secrets --sbom link-program-plugin/target/bom.json --output security-report.json
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: plugin-delivery-security
+          path: security-report.json
+          if-no-files-found: ignore
+      - name: Verify Plugin CycloneDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          bom=link-program-plugin/target/bom.json
+          if [[ ! -f "$bom" ]] || ! python3 -c 'import json,sys; b=json.load(open(sys.argv[1], encoding="utf-8")); assert isinstance(b,dict) and b.get("bomFormat")=="CycloneDX" and isinstance(b.get("components"),list)' "$bom"; then
+            echo "Missing or invalid Plugin CycloneDX SBOM: $bom" >&2
+            exit 1
+          fi
       - name: Verify host API is excluded from the fat JAR
         shell: bash
         run: |
           jar_file=$(find link-program-plugin/target -maxdepth 1 -name '*-fat.jar' -print -quit)
+          java scripts/VerifyPluginJar.java "$jar_file"
           if jar tf "$jar_file" | grep -q '^com/jlshell/plugin/api/'; then
             echo "Host Plugin API leaked into $jar_file" >&2
             exit 1
@@ -44,7 +169,56 @@ jobs:
               exit 1
             fi
           done
+          for required_entry in \
+            com/jlshell/link/client/LinkClientEngine.class \
+            com/jlshell/link/client/RelayCarrierPlanFactory.class \
+            com/jlshell/link/plugin/program/LinkClientRuntime.class \
+            com/jlshell/link/internal/netty/channel/nio/NioEventLoopGroup.class; do
+            if ! jar tf "$jar_file" | grep -qx "$required_entry"; then
+              echo "Missing in-process Java Link runtime class $required_entry" >&2
+              exit 1
+            fi
+          done
+          if jar tf "$jar_file" | grep -Eq 'META-INF/jlshell-link/runtime/|jlshell-(connector|agent)-|ConnectorProcessManager.class|LinkSessionContribution.class|LinkSessionController.class|LinkAccountClient.class|BundledRuntimeManager.class|PeerIdCodec.class|TunnelOpenRequest.class'; then
+            echo "Legacy Connector/Agent runtime content must not be packaged in the Java plugin" >&2
+            exit 1
+          fi
           if [ "$(find link-plugin-distribution/target/plugins -maxdepth 1 -name '*.jar' | wc -l | tr -d ' ')" != "1" ]; then
             echo "Distribution must contain exactly one Program plugin JAR" >&2
             exit 1
           fi
+      - name: Record installable candidate hashes and source
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+          CANDIDATE_PLATFORM: ${{ matrix.runner }}
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('link-program-plugin/target')
+          jars = list(root.glob('*-fat.jar'))
+          if len(jars) != 1:
+              raise SystemExit('Expected exactly one installable Program plugin')
+          paths = [jars[0], root / 'bom.json']
+          record = {
+              'schemaVersion': 1,
+              'scope': 'private-ci-candidate-not-stable-release',
+              'sourceRevision': os.environ['SOURCE_REVISION'],
+              'platform': os.environ['CANDIDATE_PLATFORM'],
+              'linkSourceRevision': Path('.github/link-integration-revision').read_text().strip(),
+              'linkVersion': '0.0.0-internal.g' + Path('.github/link-integration-revision').read_text().strip(),
+              'files': [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                         'size': p.stat().st_size} for p in paths],
+          }
+          (root / 'candidate-provenance.json').write_text(json.dumps(record, indent=2) + '\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-installable-candidate-${{ matrix.runner }}
+          path: |
+            link-program-plugin/target/*-fat.jar
+            link-program-plugin/target/bom.json
+            link-program-plugin/target/candidate-provenance.json
+          if-no-files-found: error
+          retention-days: 14
